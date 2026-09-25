@@ -1,18 +1,19 @@
 import type { NpcId } from './npc';
-import type { PlausibilityJudgment } from './router';
+import type { PlausibilityJudgment } from './turn';
 
 export interface SceneExchange {
   index: number;
   playerInput: string;
   reply: string;
-  /** 라우터가 사소하다고 분류해 자기가 직접 대사를 생성했으면 false */
+  /** 이 교환의 개연성 판단이 neutral이 아니었거나 outcomeImpact가 있었으면 true. */
   wasSignificant: boolean;
 }
 
 /**
  * 대화 같은 왕복 상황 진행 중 상태. 매크로 턴 파이프라인(스킵/디테일 판단, elapsedMonths)을
- * 우회하고, 교환마다 라우터가 사소함/중요함만 판단한다. 씬이 끝나야 그 전체가 요약되어
- * 매크로 로그/그래프에 한 번만 커밋된다 — 대사 한 줄 한 줄이 그래프를 오염시키지 않게.
+ * 우회하고, 교환마다 곧장 모델을 불러 대사+판단을 받는다(분류 단계 없음 — 라우터가 없으므로).
+ * 씬이 끝나야 그 전체가 요약되어 매크로 로그/그래프에 한 번만 커밋된다 — 대사 한 줄 한 줄이
+ * 그래프를 오염시키지 않게.
  */
 export interface SceneState {
   id: string;

@@ -1,5 +1,5 @@
 import { createEmptyMemoryGraph } from './types';
-import type { MemoryGraph, Npc, NpcId, NpcRelationType, ProposedNpc, RouterOutput } from './types';
+import type { MemoryGraph, MemoryGraphDelta, Npc, NpcId, NpcRelationType, ProposedNpc } from './types';
 
 /** 승격 임계값이자, 강등이 허용되는 관계에서 다시 minor로 떨어지는 기준선이기도 하다. */
 export const IMPORTANCE_PROMOTION_THRESHOLD = 50;
@@ -148,9 +148,9 @@ export function driftNpcRelationship(npc: Npc, elapsedMonths: number): Npc {
  * 이 해소는 그래프 적용 전에 미리 끝내둔다.
  */
 export function resolveNewNpcReferences(
-  delta: RouterOutput['memoryGraphDelta'],
+  delta: MemoryGraphDelta,
   npcLocalIdToRealId: Map<string, string>,
-): RouterOutput['memoryGraphDelta'] {
+): MemoryGraphDelta {
   return {
     ...delta,
     newNodes: delta.newNodes.map((node) => ({
@@ -161,11 +161,11 @@ export function resolveNewNpcReferences(
 }
 
 /**
- * 라우터가 이번 턴 처음 소개한 인물들의 Npc 레코드를 만든다.
- * `knownNpcNames`로 이미 안내했음에도 라우터가 같은 이름을 다시 신규로 제안하면
+ * 모델이 이번 턴 처음 소개한 인물들의 Npc 레코드를 만든다.
+ * `knownNpcNames`로 이미 안내했음에도 모델이 같은 이름을 다시 신규로 제안하면
  * (환각/실수) 무시한다 — 중복 NPC 생성 방지.
  */
-export function createNpcsFromRouterOutput(
+export function createNpcsFromProposals(
   existingNpcs: Record<NpcId, Npc>,
   proposedNpcs: ProposedNpc[],
   npcLocalIdToRealId: Map<string, string>,

@@ -1,14 +1,14 @@
 import type {
   EraEventDefinition,
   GameClock,
+  MemoryGraphDelta,
   ObservableStats,
-  ParsedIntent,
   PlausibilityJudgment,
   ProposedNpc,
   RecalledMemory,
-  RouterOutput,
   SceneExchange,
-  StatImpact,
+  OutcomeImpact,
+  MentalSymptomTag,
 } from '../types';
 
 export interface RecentLogSummary {
@@ -18,46 +18,63 @@ export interface RecentLogSummary {
 }
 
 /**
- * 라우터에게 주는 입력은 전체 GameState가 아니라 이것뿐이다 — 라우터는 빠른 분류/파싱이
- * 목적이라 최근 로그 tail 정도만 보면 충분하고, 전체 로그/그래프를 주면 속도 이점이 사라진다.
+ * 모델이 호출되는 계기는 딱 셋뿐이다 — 나머지(평범한 시간 경과, 급사, "지금이 그 순간인가"
+ * 판단)는 전부 코드가 직접 결정한다(gameLoop.ts, eraEvents.ts). 라우터가 있던 시절엔 매 턴
+ * 이 판단 자체를 모델에게 물었지만, 지금은 "이미 뭔가 서술해야 한다고 코드가 정한 순간"에만
+ * 모델이 불려온다.
  */
-export interface RouterTurnRequest {
-  clock: GameClock;
-  playerInput: string | null;
-  recentLog: RecentLogSummary[];
-  /** target 파싱 시 참고할 기존 NPC 이름 목록 */
-  knownNpcNames: string[];
-  /**
-   * 지금 시점 근방에 해당 가능한 시대 이벤트 후보 (eraEvents.ts의 getRelevantEraEvents로
-   * 값싸게 미리 추려진 것). 실제로 겪는지, 정확히 언제인지는 라우터가 최종 판단한다.
-   */
-  relevantEraEvents: EraEventDefinition[];
-}
+export type TurnTrigger =
+  | { kind: 'playerAction'; playerInput: string }
+  | { kind: 'eraEvent'; definition: EraEventDefinition }
+  | { kind: 'unpromptedEvent' };
 
 /**
- * 씬(대화 등) 안에서 매 교환마다 호출 — "이 한 마디가 사소한가/중요한가"만 판단.
- * 매크로 라우터 호출과 스케일만 다를 뿐 같은 역할(저렴한 분류)의 재사용.
+ * 모델에게도 전체 GameState/그래프를 주지 않는다 — 그래프에서 활성화 기준으로 이미
+ * 회수된 `recalledMemories`만 넘겨서, "기억의 흐릿함"이 인터페이스 수준에서 강제되도록
+ * 한다(구현자가 실수로 그래프 전체를 프롬프트에 넣을 수 없게).
  */
-export interface SceneClassifyRequest {
+export interface TurnRequest {
+  clock: GameClock;
+  observable: ObservableStats;
+  trigger: TurnTrigger;
+  recentLog: RecentLogSummary[];
+  recalledMemories: RecalledMemory[];
+  /** newNpcs 중복 제안 방지용 기존 NPC 이름 목록 */
+  knownNpcNames: string[];
+}
+
+export interface TurnResponse {
+  narrative: string;
+  plausibilityJudgment: PlausibilityJudgment;
+  /** 이번 사건이 hidden/observable 값에 준 실제 영향 — statImpact.ts가 실제 숫자로 변환한다. */
+  outcomeImpact?: OutcomeImpact;
+  /** 서사를 통해 겉으로 드러난 정신건강 증상 — observable에 바로 반영된다. */
+  newVisibleSymptom?: MentalSymptomTag;
+  /** 이번 사건으로 사망했다면 사인. 아니면 undefined. */
+  death?: { cause: string } | null;
+  /** 이 서사가 왕복 대화로 이어진다면 씬 진입 — 누가 그 자리에 있는지. */
+  entersScene?: { involvedNpcIds: string[] } | null;
+  newNpcs?: ProposedNpc[];
+  memoryGraphDelta?: MemoryGraphDelta;
+}
+
+/** 씬(대화 등) 안에서 "중요함/판단 필요"로 분류된 교환에만 호출 — recalledMemories는
+ *  관련 NPC 관점으로 필터링된 것. (분류 자체는 없어졌다 — 모든 교환이 이 호출 하나로 간다.) */
+export interface SceneTurnRequest {
   clock: GameClock;
   involvedNpcNames: string[];
   exchangesSoFar: SceneExchange[];
   playerInput: string;
+  recalledMemories: RecalledMemory[];
 }
 
-export interface SceneClassifyResponse {
-  /** 대화 자체의 무게 — 응답 생성 비용(누가 대사를 쓸지)을 결정한다. */
-  significance: 'trivial' | 'significant';
-  /** significance가 'trivial'일 때만 사용 — 라우터가 직접 생성한 짧은 대사 */
-  trivialReply?: string;
-  /**
-   * 대화는 잡담처럼 보여도, 그 안에서 위험한/결과가 따르는 행동이 시도됐다고 판단되면 true.
-   * significance와 별개의 축이다 — "대화가 가볍다"와 "이 행동은 판단이 필요하다"는 다른
-   * 질문이기 때문. 둘 중 하나라도 참이면 메인 모델로 넘어간다(라우터가 직접 대사를 짓지 않음).
-   */
-  requiresPlausibilityJudgment: boolean;
-  /** 이 교환으로 씬이 자연스럽게 끝난다고 판단하면 true (하드 캡과 별개의 모델 신호) */
+export interface SceneTurnResponse {
+  reply: string;
+  plausibilityJudgment: PlausibilityJudgment;
   sceneEnded: boolean;
+  outcomeImpact?: OutcomeImpact;
+  newVisibleSymptom?: MentalSymptomTag;
+  death?: { cause: string } | null;
 }
 
 /** 씬이 끝날 때 전체 교환 로그를 한 번에 압축 — 매크로 로그/그래프엔 이 결과 하나만 커밋된다. */
@@ -73,59 +90,12 @@ export interface SceneSummary {
   /** 씬 자체가 게임 시간에 기여하는 개월 수. 보통 0. */
   elapsedMonths: number;
   newNpcs: ProposedNpc[];
-  memoryGraphDelta: RouterOutput['memoryGraphDelta'];
+  memoryGraphDelta: MemoryGraphDelta;
 }
 
-/** 소형 라우터 모델을 감싸는 클라이언트. 구현체는 나중에 WebLLM으로 붙인다. */
-export interface RouterModelClient {
-  runRouterTurn(request: RouterTurnRequest): Promise<RouterOutput>;
-  classifySceneExchange(request: SceneClassifyRequest): Promise<SceneClassifyResponse>;
-  summarizeScene(request: SceneSummaryRequest): Promise<SceneSummary>;
-}
-
-/**
- * 메인 모델에게도 전체 GameState/그래프를 주지 않는다 — 그래프에서 활성화 기준으로
- * 이미 회수된 `recalledMemories`만 넘겨서, "기억의 흐릿함"이 인터페이스 수준에서
- * 강제되도록 한다 (구현자가 실수로 그래프 전체를 프롬프트에 넣을 수 없게).
- */
-export interface MainTurnRequest {
-  clock: GameClock;
-  observable: ObservableStats;
-  intent: ParsedIntent;
-  recentLog: RecentLogSummary[];
-  recalledMemories: RecalledMemory[];
-}
-
-export interface MainTurnResponse {
-  narrative: string;
-  plausibilityJudgment: PlausibilityJudgment;
-  /** 이번 사건으로 사망했다면 사인. 아니면 null/undefined. */
-  death?: { cause: string } | null;
-  /** 이 서사가 왕복 대화로 이어진다면 씬 진입 — 누가 그 자리에 있는지. */
-  entersScene?: { involvedNpcIds: string[] } | null;
-  /** 이 사건이 hidden/observable 값에 준 실제 영향 — plausibilityJudgment를 상태에 반영하는 채널. */
-  statImpact?: StatImpact;
-}
-
-/** 씬 안에서 "중요함"으로 분류된 교환에만 호출 — recalledMemories는 관련 NPC 관점으로 필터링된 것. */
-export interface SceneTurnRequest {
-  clock: GameClock;
-  involvedNpcNames: string[];
-  exchangesSoFar: SceneExchange[];
-  playerInput: string;
-  recalledMemories: RecalledMemory[];
-}
-
-export interface SceneTurnResponse {
-  reply: string;
-  plausibilityJudgment: PlausibilityJudgment;
-  sceneEnded: boolean;
-  death?: { cause: string } | null;
-  statImpact?: StatImpact;
-}
-
-/** 무거운 메인 모델을 감싸는 클라이언트. 구현체는 나중에 WebLLM으로 붙인다. */
-export interface MainModelClient {
-  runDetailTurn(request: MainTurnRequest): Promise<MainTurnResponse>;
+/** 단일 모델(라우터 없음)을 감싸는 클라이언트. 구현체는 webllmClients.ts. */
+export interface GameModelClient {
+  runTurn(request: TurnRequest): Promise<TurnResponse>;
   runSceneTurn(request: SceneTurnRequest): Promise<SceneTurnResponse>;
+  summarizeScene(request: SceneSummaryRequest): Promise<SceneSummary>;
 }

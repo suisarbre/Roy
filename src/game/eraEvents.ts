@@ -41,42 +41,55 @@ export const ERA_EVENT_POOL: EraEventDefinition[] = [
   },
 ];
 
-const DEFAULT_LOOKAHEAD_MONTHS = 24;
-
 function dateToTotalMonths(date: GameDate): number {
   return date.year * 12 + (date.month - 1);
 }
 
+/** 지금 이 순간 이 이벤트의 자격 구간(연도+나이) 안에 있는지. */
+export function isEraEventWindowOpen(currentDate: GameDate, ageYears: number, definition: EraEventDefinition): boolean {
+  const [startYear, endYear] = definition.yearRange;
+  if (currentDate.year < startYear || currentDate.year > endYear) return false;
+  if (definition.ageRange) {
+    const [minAge, maxAge] = definition.ageRange;
+    if (ageYears < minAge || ageYears > maxAge) return false;
+  }
+  return true;
+}
+
 /**
- * 지금 시점 근방(lookaheadMonths 이내)에 해당 가능한 이벤트 후보를 값싸게 추려낸다.
- * 이미 겪은 이벤트는 제외한다(정의당 최대 1회 발생을 가정 — 반복 가능한 이벤트가 필요해지면
- * 나중에 EraEventDefinition에 repeatable 플래그를 추가하면 된다). 최종적으로 "진짜 겪는지,
- * 정확히 언제"는 이 후보군을 받은 라우터가 판단한다.
+ * 자격 구간이 닫히기까지 남은 개월 수(연도 제한과 나이 제한 중 더 빨리 닫히는 쪽 기준).
+ * rollEraEventTrigger의 입력으로 쓴다 — 창이 닫혀갈수록 트리거 확률이 올라가게 하기 위함.
  */
-export function getRelevantEraEvents(
+export function monthsRemainingInEraEventWindow(currentDate: GameDate, ageYears: number, definition: EraEventDefinition): number {
+  const currentTotalMonths = dateToTotalMonths(currentDate);
+  const yearWindowEndMonths = (definition.yearRange[1] + 1) * 12 - 1 - currentTotalMonths;
+
+  let ageWindowEndMonths = Infinity;
+  if (definition.ageRange) {
+    ageWindowEndMonths = Math.max(0, Math.round((definition.ageRange[1] - ageYears) * 12));
+  }
+
+  return Math.max(0, Math.min(yearWindowEndMonths, ageWindowEndMonths));
+}
+
+/**
+ * "지금이 그 순간이다"를 코드가 직접 굴린다(예전엔 라우터가 매턴 판단했다). remainingMonths가
+ * 적을수록(창이 닫혀갈수록) 확률이 올라가서, 마지막 기회(remainingMonths<=0)에는 반드시
+ * 트리거된다 — 자격 구간을 통째로 놓치는 일이 없게 하기 위한 장치.
+ */
+export function rollEraEventTrigger(remainingMonthsInWindow: number): boolean {
+  if (remainingMonthsInWindow <= 0) return true;
+  const probability = 1 / (remainingMonthsInWindow + 1);
+  return Math.random() < probability;
+}
+
+/** 지금 자격 구간이 열려 있고 아직 안 겪은 시대 이벤트들 — 매 스킵 사이클마다 이걸 굴린다. */
+export function getOpenEraEventCandidates(
   currentDate: GameDate,
   ageYears: number,
   occurredDefinitionIds: ReadonlySet<string>,
-  lookaheadMonths: number = DEFAULT_LOOKAHEAD_MONTHS,
 ): EraEventDefinition[] {
-  const currentTotalMonths = dateToTotalMonths(currentDate);
-  const windowEndTotalMonths = currentTotalMonths + lookaheadMonths;
-  const maxAgeInWindow = ageYears + Math.ceil(lookaheadMonths / 12);
-
-  return ERA_EVENT_POOL.filter((definition) => {
-    if (occurredDefinitionIds.has(definition.id)) return false;
-
-    const [startYear, endYear] = definition.yearRange;
-    const defStartMonths = startYear * 12;
-    const defEndMonths = (endYear + 1) * 12 - 1; // 종료 연도 12월까지 포함
-    const overlapsWindow = defStartMonths <= windowEndTotalMonths && defEndMonths >= currentTotalMonths;
-    if (!overlapsWindow) return false;
-
-    if (definition.ageRange) {
-      const [minAge, maxAge] = definition.ageRange;
-      if (maxAgeInWindow < minAge || ageYears > maxAge) return false;
-    }
-
-    return true;
-  });
+  return ERA_EVENT_POOL.filter(
+    (definition) => !occurredDefinitionIds.has(definition.id) && isEraEventWindowOpen(currentDate, ageYears, definition),
+  );
 }

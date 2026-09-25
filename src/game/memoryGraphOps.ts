@@ -1,5 +1,5 @@
 import { AMBIENT_RECALL_THRESHOLD, computeActivation } from './memoryActivation';
-import type { MemoryGraph, Npc, RecalledMemory, RouterOutput } from './types';
+import type { MemoryGraph, MemoryGraphDelta, Npc, RecalledMemory } from './types';
 
 export interface ApplyDeltaResult {
   graph: MemoryGraph;
@@ -10,13 +10,13 @@ export interface ApplyDeltaResult {
 }
 
 /**
- * 라우터가 제안한 그래프 델타(신규 노드/엣지, 접근된 노드)를 기존 그래프에 반영한다.
+ * 모델이 제안한 그래프 델타(신규 노드/엣지, 접근된 노드)를 기존 그래프에 반영한다.
  * newEdges의 from/to는 기존 노드의 실제 id이거나, 같은 델타의 newNodes[].localId일 수 있다 —
  * 신규 노드에는 아직 실제 id가 없으므로 이번 호출 안에서 즉석으로 매핑해서 해소한다.
  */
 export function applyMemoryGraphDelta(
   graph: MemoryGraph,
-  delta: RouterOutput['memoryGraphDelta'],
+  delta: MemoryGraphDelta,
   currentTurn: number,
 ): ApplyDeltaResult {
   const nodes = { ...graph.nodes };
@@ -47,7 +47,7 @@ export function applyMemoryGraphDelta(
   for (const proposedEdge of delta.newEdges) {
     const from = resolveNodeId(proposedEdge.from);
     const to = resolveNodeId(proposedEdge.to);
-    // 존재하지 않는 노드를 가리키면 무시한다 — 라우터가 환각으로 만들어낸 참조에 대한 방어.
+    // 존재하지 않는 노드를 가리키면 무시한다 — 모델이 환각으로 만들어낸 참조에 대한 방어.
     if (!nodes[from] || !nodes[to]) continue;
 
     const id = crypto.randomUUID();
@@ -139,7 +139,7 @@ export function getRecalledMemoryNodeIds(
  * 판단하는 입력으로 쓰인다.
  */
 export function getParticipantNpcIdsInDelta(
-  delta: RouterOutput['memoryGraphDelta'],
+  delta: MemoryGraphDelta,
   graphAfterDelta: MemoryGraph,
 ): string[] {
   const ids = new Set<string>();
@@ -159,9 +159,9 @@ export function getParticipantNpcIdsInDelta(
  * 자연히 드롭된다.
  */
 export function filterDeltaForParticipant(
-  delta: RouterOutput['memoryGraphDelta'],
+  delta: MemoryGraphDelta,
   npcId: string,
-): RouterOutput['memoryGraphDelta'] {
+): MemoryGraphDelta {
   return {
     newNodes: delta.newNodes.filter((node) => node.participantNpcIds?.includes(npcId)),
     newEdges: delta.newEdges,

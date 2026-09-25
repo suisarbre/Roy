@@ -1,11 +1,5 @@
 import type { Language } from '../../i18n';
-import type {
-  MainTurnRequest,
-  RouterTurnRequest,
-  SceneClassifyRequest,
-  SceneSummaryRequest,
-  SceneTurnRequest,
-} from './types';
+import type { SceneSummaryRequest, SceneTurnRequest, TurnRequest } from './types';
 
 /**
  * 프롬프트 지시문 자체는 영어로 고정한다(모델의 지시 이해력이 가장 높은 언어) — 대신
@@ -28,7 +22,7 @@ const LANGUAGE_NAMES: Record<Language, string> = {
 };
 
 /**
- * 캐릭터 설정 + 문서 핵심 원칙. 모든 호출(라우터/메인)의 system prompt 공통 도입부로 쓴다.
+ * 캐릭터 설정 + 문서 핵심 원칙. 모든 호출의 system prompt 공통 도입부로 쓴다.
  * concept doc의 톤/판단 원칙을 모델이 매번 다시 상기하도록 짧게 유지한다.
  */
 const CHARACTER_AND_PRINCIPLES = `You are the simulation engine behind "Roy — A Life," a text-based life simulation.
@@ -50,13 +44,15 @@ kind of action; crime is not treated specially. Preparation earns a better outco
 is punished. Cite the specific memories that justify your verdict.
 
 CORE PRINCIPLE — mortality: death can happen at any time, including during uneventful passage of time
-with no dramatic buildup, exactly as in real life. Do not reserve death only for climactic moments.
+with no dramatic buildup, exactly as in real life. Do not reserve death only for climactic moments. (Note:
+an unforeseeable sudden death during ordinary time passing is decided by the game engine itself, not you —
+you only decide death when it's a direct, plausible consequence of the scene you're writing.)
 
 CORE PRINCIPLE — memory: you only ever see a curated subset of Roy's memories (already filtered for you),
 never his whole life. Treat what you don't see as genuinely unknown to you, not as something to infer.`;
 
 function languageInstruction(language: Language): string {
-  return `Respond in ${LANGUAGE_NAMES[language]}. Every free-text field (narrative, reply, trivialReply, content, label, cause, etc.) must be written in ${LANGUAGE_NAMES[language]}. Field names and enum values themselves stay in English exactly as specified by the schema.`;
+  return `Respond in ${LANGUAGE_NAMES[language]}. Every free-text field (narrative, reply, content, label, cause, etc.) must be written in ${LANGUAGE_NAMES[language]}. Field names and enum values themselves stay in English exactly as specified by the schema.`;
 }
 
 /** 스키마상 optional인 필드는 "해당 없음"일 때 아예 생략하라고 명시 — 그래야 매 호출마다
@@ -70,86 +66,121 @@ function jsonBlock(value: unknown): string {
   return '```json\n' + JSON.stringify(value) + '\n```';
 }
 
+const OUTCOME_IMPACT_INSTRUCTION = `- outcomeImpact: the concrete consequence of this moment, if any — omit entirely if nothing changed (that's
+  the normal case for most turns). When something did change, give ONE axis it primarily affects
+  ('finance' | 'health' | 'mentalHealth' | 'relationship'), a direction, and a magnitude
+  ('minor' | 'moderate' | 'major') proportionate to this single moment — not life-changing swings, unless
+  the moment truly is life-changing (losing a job, a major windfall, a death in the family). direction
+  means "good or bad for Roy", not a literal increase/decrease: 'positive' = more money (finance),
+  recovering/improving (health), feeling better/less stressed (mentalHealth), or a warmer relationship
+  (relationship); 'negative' = the opposite of each. For axis 'relationship' you must also set
+  relationshipNpcId. For axis 'health' with a negative direction, you may set note to a short label for
+  what's emerging (e.g. "early-stage hypertension") — leave it out for a generic unspecified issue.
+- newVisibleSymptom: only if a mental-health symptom becomes outwardly visible in this exact moment
+  (insomnia, irritability, fatigue, appetiteChange, lossOfInterest, panicEpisode). Omit otherwise.`;
+
 export interface PromptPair {
   system: string;
   user: string;
 }
 
-/** 라우터: 매크로 턴 분류/파싱. 서사 작성은 하지 않는다 — 구조화 데이터만 산출. */
-export function buildRouterTurnPrompt(request: RouterTurnRequest, language: Language): PromptPair {
+/**
+ * 단일 모델의 메인 호출 — 트리거 종류에 따라 지시문이 달라진다:
+ * playerAction(플레이어가 직접 입력), eraEvent(코드가 이미 "지금이 그 순간"이라고 정한
+ * 시대 이벤트), unpromptedEvent(코드가 낮은 확률로 굴려서 뽑은 돌발 사건 — 구체적 내용은
+ * 없고, 모델이 Roy의 상황에 맞게 그럴듯한 사건 하나를 즉석에서 지어내야 함).
+ * turnType/elapsedMonths/eraEventTriggered 판단은 전부 코드가 이미 끝냈으므로 스키마에서
+ * 아예 빠졌다 — 모델은 "무슨 일이 있었는지"만 쓰면 된다.
+ */
+export function buildTurnPrompt(request: TurnRequest, language: Language): PromptPair {
+  let triggerInstruction: string;
+  switch (request.trigger.kind) {
+    case 'playerAction':
+      triggerInstruction = `Roy just did/said this: ${JSON.stringify(request.trigger.playerInput)}. Write the scene that plays out from this attempt.`;
+      break;
+    case 'eraEvent':
+      triggerInstruction = `This is precisely the moment Roy experiences a real historical event: "${request.trigger.definition.label}" (${request.trigger.definition.eligibilityDescription}). Write how it touches his life right now — this is not something Roy chose, it's happening to/around him.`;
+      break;
+    case 'unpromptedEvent':
+      triggerInstruction =
+        "Nothing was scripted for this moment — invent ONE small, plausible unscripted thing that happens to Roy right now, fitting naturally with his current situation and history (recentLog/recalledMemories). This is not player-initiated; Roy didn't choose it. Keep it mundane-but-real, the kind of thing that just happens in a life (not a dramatic twist).";
+      break;
+  }
+
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: You are the fast ROUTER model. Your only job is classification and structured extraction —
-you never write prose narrative yourself (a separate model does that for 'detail' turns; for 'skip'
-turns no narrative is needed at all, the game engine renders a template).
+ROLE: You write ONE scene/moment and its consequences.
+
+TRIGGER: ${triggerInstruction}
 
 Decide:
-- turnType: 'skip' if this input (or the passage of unguided time) doesn't need a detailed scene —
-  routine, unremarkable. 'detail' if it deserves a real scene (the player attempted something specific,
-  or something significant should happen even unprompted).
-- If playerInput is null, Roy is just letting time pass — usually 'skip', but you may still choose
-  'detail' if something noteworthy should occur unprompted, and you may set suddenDeath (rare, ~0.5%
-  chance per call at most, unremarkable sudden death like a heart attack or accident) even on a skip turn.
-- elapsedMonths: how many months this turn covers (detail turns: usually 0, it's a single scene). For
-  skip turns, prefer BIG jumps over many small ones whenever the stretch is genuinely uneventful — do not
-  default to 1-3 months out of caution. If nothing in relevantEraEvents could plausibly occur in the
-  window and nothing about Roy's situation demands closer attention, jump as much as 12-24 months in a
-  single call. Only use a small elapsedMonths (1-3) when something is clearly brewing that deserves
-  closer-grained passage. Every skip call has a real cost (it's another round trip), so bias toward fewer,
-  larger jumps.
-- intent: only when turnType is 'detail' and playerInput is not null — parse the player's stated action.
-- eraEventTriggered: only set this to one of relevantEraEvents[].id if this turn is precisely the moment
-  Roy experiences that event, and only on a 'detail' turn. Otherwise omit it entirely.
-- newNpcs / memoryGraphDelta: extract any new people, events, places worth remembering from this turn.
+- narrative: the scene itself, documentary tone, third person. Keep it TIGHT: 2-4 sentences is the norm.
+  Only go longer when the moment is genuinely pivotal (a death, a life-altering decision) — never pad an
+  ordinary scene to sound more literary.
+- plausibilityJudgment: verdict ('reckless' | 'prepared' | 'neutral' — 'neutral' when this wasn't really an
+  attempt at anything, e.g. most eraEvent/unpromptedEvent moments), citing specific recalledMemories ids
+  that justify it, and successBias for how favorably this should resolve.
+${OUTCOME_IMPACT_INSTRUCTION}
+- death: only if Roy's life plausibly ends in this exact moment. Otherwise omit it.
+- entersScene: set this if the natural next step is a back-and-forth conversation/interaction that should
+  be played out exchange-by-exchange (list the NPC ids present). Otherwise omit it.
+- newNpcs / memoryGraphDelta: extract any new people, events, places worth remembering from this moment.
   Only propose newNpcs for names NOT already in knownNpcNames. localId values are your own temporary
   references within this single response (not real IDs) — newEdges/participantNpcIds may point to them.
-  If nothing is worth remembering, omit memoryGraphDelta (or its empty parts) entirely.
+  Omit entirely if nothing is worth remembering.
 
-${languageInstruction(language)} (note: this call produces almost no free text — only cause/content/label
-fields if used at all). ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
+You only see recalledMemories (a filtered subset of Roy's memory graph, by activation strength) — not his
+whole life. Treat anything not listed there as something you don't currently recall, even if it might
+exist elsewhere in his history.
 
-  const user = `Current state:
-${jsonBlock({ clock: request.clock, playerInput: request.playerInput, knownNpcNames: request.knownNpcNames })}
+${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
+
+  const user = `Roy's clock: ${jsonBlock(request.clock)}
+
+Observable stats (what would be visible to an outside observer / Roy himself right now):
+${jsonBlock(request.observable)}
+
+Known NPC names (do not re-propose these as new):
+${jsonBlock(request.knownNpcNames)}
 
 Recent log (oldest to newest):
 ${jsonBlock(request.recentLog)}
 
-Candidate era events (only trigger one if this turn is truly that moment):
-${jsonBlock(request.relevantEraEvents)}
+Recalled memories (activation-filtered, not the full graph):
+${jsonBlock(request.recalledMemories)}
 
-Produce the RouterOutput JSON now.`;
+Produce the TurnResponse JSON now.`;
 
   return { system, user };
 }
 
-/** 씬 안 교환 분류: 사소함/중요함 + 개연성 판단 필요 여부. trivial이면 짧은 대사도 직접 짓는다. */
-export function buildSceneClassifyPrompt(request: SceneClassifyRequest, language: Language): PromptPair {
+/** 씬 안에서 significant/판단 필요로 분류된 교환의 실제 응답. (분류 단계는 없어졌다 — 라우터가
+ *  없으므로 모든 교환이 이 호출 하나로 처리된다.) */
+export function buildSceneTurnPrompt(request: SceneTurnRequest, language: Language): PromptPair {
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: You are the fast ROUTER model, now classifying one exchange inside an ongoing scene (a
-back-and-forth conversation or interaction with ${request.involvedNpcNames.join(', ') || 'someone'}).
+ROLE: You are writing one reply inside an ongoing scene with ${request.involvedNpcNames.join(', ') || 'someone'}.
 
 Decide:
-- significance: 'trivial' if this exchange is small talk / has no real stakes. 'significant' if it
-  matters (emotional weight, a real request, a consequential statement).
-- requiresPlausibilityJudgment: true if, regardless of significance, Roy is attempting something inside
-  this line that should be judged for plausibility (a risky ask, a deceptive claim, a proposal). This is
-  a separate axis from significance — either being true routes this to the heavier main model.
-- If trivial AND does not require judgment, you write trivialReply yourself: a short, in-character,
-  low-stakes line from the other person(s) in the scene. Keep it brief (1-2 sentences).
-- sceneEnded: true if this exchange is a natural closing point for the scene (goodbye, topic
-  exhausted, someone leaves).
+- reply: what the other person/people say or do in response, in character, documentary tone. Keep it
+  TIGHT: 1-3 sentences is the norm for a single conversational beat — this is one exchange, not a monologue.
+- plausibilityJudgment: judge any risky/consequential attempt Roy just made in his line, citing
+  recalledMemories. Use 'neutral' for ordinary small talk with nothing to judge.
+${OUTCOME_IMPACT_INSTRUCTION}
+- death: only if Roy's life plausibly ends in this exact exchange. Otherwise omit it.
+- sceneEnded: true if this reply naturally closes the scene.
 
 ${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Scene so far (oldest to newest):
 ${jsonBlock(request.exchangesSoFar)}
 
-Roy's clock: ${jsonBlock(request.clock)}
-
 Roy's new line: ${JSON.stringify(request.playerInput)}
 
-Produce the classification JSON now.`;
+Recalled memories (activation-filtered, participant-perspective where applicable):
+${jsonBlock(request.recalledMemories)}
+
+Produce the SceneTurnResponse JSON now.`;
 
   return { system, user };
 }
@@ -158,8 +189,8 @@ Produce the classification JSON now.`;
 export function buildSceneSummaryPrompt(request: SceneSummaryRequest, language: Language): PromptPair {
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: You are the fast ROUTER model. A scene with ${request.involvedNpcNames.join(', ') || 'someone'} has
-just ended. Compress the whole exchange log into:
+ROLE: A scene with ${request.involvedNpcNames.join(', ') || 'someone'} has just ended. Compress the whole
+exchange log into:
 - narrative: ONE compact sentence or two for the macro life-log (documentary tone), summarizing what
   this scene amounted to, not a transcript.
 - elapsedMonths: how much game time this scene itself consumed (usually 0 — it's a single sitting).
@@ -174,82 +205,6 @@ ${jsonBlock(request.exchanges)}
 Roy's clock: ${jsonBlock(request.clock)}
 
 Produce the SceneSummary JSON now.`;
-
-  return { system, user };
-}
-
-/** 메인: 매크로 detail 턴 — 실제 서사 + 개연성 판단 + statImpact. */
-export function buildMainTurnPrompt(request: MainTurnRequest, language: Language): PromptPair {
-  const system = `${CHARACTER_AND_PRINCIPLES}
-
-ROLE: You are the MAIN model, writing the actual scene for a 'detail' turn.
-
-Decide:
-- narrative: the scene itself, documentary tone, third person, present-to-past as appropriate. Keep it
-  TIGHT: 2-4 sentences is the norm. Only go longer when the moment is genuinely pivotal (a death, a
-  life-altering decision) — never pad an ordinary scene to sound more literary.
-- plausibilityJudgment: verdict ('reckless' | 'prepared' | 'neutral' — 'neutral' when nothing risky was
-  attempted), citing specific recalledMemories ids that justify it, and successBias for how favorably
-  this should resolve.
-- statImpact: the concrete numeric consequence of this scene, if any (every field is optional — omit
-  whatever isn't affected; an empty statImpact is normal and expected for most scenes). Deltas should be
-  small and proportionate to a single scene, not life-changing swings, unless the scene truly is
-  life-changing (e.g. losing a job, a major windfall).
-- death: only if Roy's life plausibly ends in this exact scene. Otherwise omit it.
-- entersScene: set this if the natural next step is a back-and-forth conversation/interaction that
-  should be played out exchange-by-exchange (list the NPC ids present). Otherwise omit it.
-
-You only see recalledMemories (a filtered subset of Roy's memory graph, by activation strength) — not his
-whole life. Treat anything not listed there as something you don't currently recall, even if it might
-exist elsewhere in his history.
-
-${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
-
-  const user = `Roy's clock: ${jsonBlock(request.clock)}
-
-Observable stats (what would be visible to an outside observer / Roy himself right now):
-${jsonBlock(request.observable)}
-
-Parsed intent for this turn:
-${jsonBlock(request.intent)}
-
-Recent log (oldest to newest):
-${jsonBlock(request.recentLog)}
-
-Recalled memories (activation-filtered, not the full graph):
-${jsonBlock(request.recalledMemories)}
-
-Produce the MainTurnResponse JSON now.`;
-
-  return { system, user };
-}
-
-/** 메인: 씬 안에서 significant/판단 필요로 분류된 교환의 실제 응답. */
-export function buildSceneTurnPrompt(request: SceneTurnRequest, language: Language): PromptPair {
-  const system = `${CHARACTER_AND_PRINCIPLES}
-
-ROLE: You are the MAIN model, writing one reply inside an ongoing scene with
-${request.involvedNpcNames.join(', ') || 'someone'}. This exchange was flagged as significant and/or
-needing a plausibility judgment, so you (not the router) write it.
-
-Decide:
-- reply: what the other person/people say or do in response, in character, documentary tone. Keep it
-  TIGHT: 1-3 sentences is the norm for a single conversational beat — this is one exchange, not a monologue.
-- plausibilityJudgment, statImpact, death: same rules as a detail turn — judge any risky/consequential
-  attempt Roy just made in his line, citing recalledMemories, and reflect real numeric consequences.
-- sceneEnded: true if this reply naturally closes the scene.
-
-${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
-
-  const user = `Scene so far (oldest to newest):
-${jsonBlock(request.exchangesSoFar)}
-
-Roy's new line: ${JSON.stringify(request.playerInput)}
-
-Recalled memories (activation-filtered, participant-perspective where applicable):
-${jsonBlock(request.recalledMemories)}
-
-Produce the SceneTurnResponse JSON now.`;
 
   return { system, user };
 }

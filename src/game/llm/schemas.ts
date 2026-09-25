@@ -1,24 +1,25 @@
 /**
  * WebLLM의 response_format: { type: 'json_object', schema } 용 JSON Schema 정의.
  *
- * 관례: 항상 의미 있는 필드만 `required`에 넣고, 나머지는 진짜 optional(생략 가능)로 둔다.
- * 처음엔 "모든 필드를 required+nullable로 강제"하는 방식으로 짰었는데, 그러면 아무 일도
- * 안 일어난 턴에도 statImpact의 9개 필드를 전부 null로 써내야 해서 매 호출마다 불필요한
- * 출력 토큰이 쌓이고 응답이 느려졌다 — 대부분의 턴에서 대부분의 필드는 "해당 없음"이
- * 정상이므로, 그 경우 아예 생략하는 쪽이 토큰도 절약되고 자연스럽다. WebLLM의 JSON Schema
- * 문법 제약 생성기는 표준 optional(= required에 없는 키는 생략 가능)을 지원한다.
- * 파싱 쪽(webllmClients.ts)은 이미 필드 부재를 undefined로 방어적으로 처리하고 있어서
- * 이 변경에 추가 코드 수정이 필요 없다.
+ * 관례: 항상 의미 있는 필드만 `required`에 넣고, 나머지는 진짜 optional(생략 가능)로 둔다 —
+ * "아무 일도 없었다"가 흔한 응답 모양이라, 그 경우 해당 필드를 통째로 생략하는 쪽이 토큰도
+ * 절약되고 자연스럽다. 파싱 쪽(webllmClients.ts)은 필드 부재를 undefined로 방어적으로
+ * 처리한다.
+ *
+ * 라우터를 없애면서 예전 RouterOutput/MainTurnResponse/StatImpact 스키마가 하나의
+ * TURN_RESPONSE_SCHEMA로 합쳐졌다 — turnType/elapsedMonths/eraEventTriggered는 전부
+ * 코드(gameLoop.ts, eraEvents.ts)가 직접 결정하므로 모델이 낼 필요가 없어졌고,
+ * statImpact의 9개 숫자 필드는 axis/direction/magnitude 3개짜리 정성적 등급으로 줄었다.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type JsonSchema = Record<string, any>;
 
-const ACTION_CATEGORIES = ['routine', 'career', 'relationship', 'health', 'finance', 'majorLifeAttempt', 'recall'];
 const MEMORY_NODE_TYPES = ['person', 'event', 'place', 'object', 'emotionState'];
 const MEMORY_RELATIONS = ['causedBy', 'causes', 'involves', 'locatedAt', 'owns', 'relatedTo', 'feelsTowards'];
 const NPC_RELATION_TYPES = ['parent', 'sibling', 'spouse', 'child', 'friend', 'coworker', 'boss', 'acquaintance', 'other'];
 const MENTAL_SYMPTOM_TAGS = ['insomnia', 'irritability', 'fatigue', 'appetiteChange', 'lossOfInterest', 'panicEpisode'];
+const OUTCOME_AXES = ['finance', 'health', 'mentalHealth', 'relationship'];
 
 const PROPOSED_MEMORY_NODE_SCHEMA: JsonSchema = {
   type: 'object',
@@ -57,8 +58,7 @@ const PROPOSED_NPC_SCHEMA: JsonSchema = {
 };
 
 /** 셋 다 비어있는 게 흔한 경우라, 델타 자체는 필수로 두되 내부 배열들은 전부 optional로
- *  둬서 "이번엔 아무것도 없음"일 때 `{}` 하나로 끝나게 한다(예전엔 빈 배열 3개를 강제로
- *  써야 했다). */
+ *  둬서 "이번엔 아무것도 없음"일 때 `{}` 하나로 끝나게 한다. */
 const MEMORY_GRAPH_DELTA_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
@@ -80,42 +80,18 @@ const PLAUSIBILITY_JUDGMENT_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 전부 optional — "아무 영향 없음"이 훨씬 흔한 케이스라, 그 경우 statImpact가 `{}`로
- *  끝나야 한다(이전엔 9개 필드를 매번 null로 써내야 했다). */
-const STAT_IMPACT_SCHEMA: JsonSchema = {
+/** statImpact의 9개 숫자 필드 대신 정성적 등급 하나 — 실제 숫자 변환은 statImpact.ts가
+ *  코드 테이블로 담당한다(작은 모델이 여러 숫자를 동시에 잘 보정하긴 어렵다는 판단). */
+const OUTCOME_IMPACT_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    netWorthDelta: { type: 'number' },
-    hiddenDebtDelta: { type: 'number' },
-    creditStandingDelta: { type: 'number' },
-    stressDelta: { type: 'number' },
-    burnoutDelta: { type: 'number' },
-    relationshipDelta: {
-      type: 'object',
-      properties: {
-        npcId: { type: 'string' },
-        trustDelta: { type: 'number' },
-        affectionDelta: { type: 'number' },
-        resentmentDelta: { type: 'number' },
-      },
-      required: ['npcId'],
-      additionalProperties: false,
-    },
-    newChronicSeed: {
-      type: 'object',
-      properties: {
-        label: { type: 'string' },
-        severity: { type: 'number' },
-      },
-      required: ['label', 'severity'],
-      additionalProperties: false,
-    },
-    diseaseProgressDelta: {
-      type: 'object',
-      additionalProperties: { type: 'number' },
-    },
-    newVisibleSymptom: { type: 'string', enum: MENTAL_SYMPTOM_TAGS },
+    axis: { type: 'string', enum: OUTCOME_AXES },
+    direction: { type: 'string', enum: ['positive', 'negative'] },
+    magnitude: { type: 'string', enum: ['minor', 'moderate', 'major'] },
+    relationshipNpcId: { type: 'string' },
+    note: { type: 'string' },
   },
+  required: ['axis', 'direction', 'magnitude'],
   additionalProperties: false,
 };
 
@@ -126,45 +102,50 @@ const DEATH_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
-/** runRouterTurn 응답 (RouterOutput) */
-export const ROUTER_OUTPUT_SCHEMA: JsonSchema = {
+/**
+ * runTurn 응답 — 플레이어 입력, 코드가 강제한 시대 이벤트, 코드가 주사위를 굴려 만든
+ * 돌발 사건, 이 세 가지 트리거 중 하나로 호출된다(라우터가 있던 시절의 RouterOutput +
+ * MainTurnResponse가 합쳐진 자리). narrative를 첫 필드로 선언해서(스트리밍 추출이 이
+ * 순서에 의존 — webllmClients.ts의 extractStreamingStringField 참고) 문법 제약
+ * 생성기가 이 필드부터 채우게 한다.
+ */
+export const TURN_RESPONSE_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    turnType: { type: 'string', enum: ['skip', 'detail'] },
-    intent: {
+    narrative: { type: 'string' },
+    plausibilityJudgment: PLAUSIBILITY_JUDGMENT_SCHEMA,
+    outcomeImpact: OUTCOME_IMPACT_SCHEMA,
+    newVisibleSymptom: { type: 'string', enum: MENTAL_SYMPTOM_TAGS },
+    death: DEATH_SCHEMA,
+    entersScene: {
       type: 'object',
-      properties: {
-        actionType: { type: 'string', enum: ACTION_CATEGORIES },
-        target: { type: 'string' },
-        contextTags: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['actionType'],
+      properties: { involvedNpcIds: { type: 'array', items: { type: 'string' } } },
+      required: ['involvedNpcIds'],
       additionalProperties: false,
     },
-    elapsedMonths: { type: 'integer' },
-    suddenDeath: DEATH_SCHEMA,
-    eraEventTriggered: { type: 'string' },
     newNpcs: { type: 'array', items: PROPOSED_NPC_SCHEMA },
     memoryGraphDelta: MEMORY_GRAPH_DELTA_SCHEMA,
   },
-  required: ['turnType', 'elapsedMonths'],
+  required: ['narrative', 'plausibilityJudgment'],
   additionalProperties: false,
 };
 
-/** classifySceneExchange 응답 */
-export const SCENE_CLASSIFY_SCHEMA: JsonSchema = {
+/** runSceneTurn 응답. reply가 첫 필드 — 위 TURN_RESPONSE_SCHEMA와 같은 이유. */
+export const SCENE_TURN_RESPONSE_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    significance: { type: 'string', enum: ['trivial', 'significant'] },
-    trivialReply: { type: 'string' },
-    requiresPlausibilityJudgment: { type: 'boolean' },
+    reply: { type: 'string' },
+    plausibilityJudgment: PLAUSIBILITY_JUDGMENT_SCHEMA,
     sceneEnded: { type: 'boolean' },
+    outcomeImpact: OUTCOME_IMPACT_SCHEMA,
+    newVisibleSymptom: { type: 'string', enum: MENTAL_SYMPTOM_TAGS },
+    death: DEATH_SCHEMA,
   },
-  required: ['significance', 'requiresPlausibilityJudgment', 'sceneEnded'],
+  required: ['reply', 'plausibilityJudgment', 'sceneEnded'],
   additionalProperties: false,
 };
 
-/** summarizeScene 응답 */
+/** summarizeScene 응답 — 씬 전체를 매크로 로그 한 줄 + 그래프 델타로 압축. */
 export const SCENE_SUMMARY_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
@@ -174,42 +155,5 @@ export const SCENE_SUMMARY_SCHEMA: JsonSchema = {
     memoryGraphDelta: MEMORY_GRAPH_DELTA_SCHEMA,
   },
   required: ['narrative', 'elapsedMonths'],
-  additionalProperties: false,
-};
-
-/**
- * runDetailTurn 응답. narrative를 첫 필드로 선언해서(스트리밍 추출이 이 순서에 의존 —
- * webllmClients.ts의 extractStreamingStringField 참고) 문법 제약 생성기가 이 필드부터
- * 채우게 한다.
- */
-export const MAIN_TURN_RESPONSE_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    narrative: { type: 'string' },
-    plausibilityJudgment: PLAUSIBILITY_JUDGMENT_SCHEMA,
-    death: DEATH_SCHEMA,
-    entersScene: {
-      type: 'object',
-      properties: { involvedNpcIds: { type: 'array', items: { type: 'string' } } },
-      required: ['involvedNpcIds'],
-      additionalProperties: false,
-    },
-    statImpact: STAT_IMPACT_SCHEMA,
-  },
-  required: ['narrative', 'plausibilityJudgment'],
-  additionalProperties: false,
-};
-
-/** runSceneTurn 응답. reply가 첫 필드 — 위 MAIN_TURN_RESPONSE_SCHEMA와 같은 이유. */
-export const SCENE_TURN_RESPONSE_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    reply: { type: 'string' },
-    plausibilityJudgment: PLAUSIBILITY_JUDGMENT_SCHEMA,
-    sceneEnded: { type: 'boolean' },
-    death: DEATH_SCHEMA,
-    statImpact: STAT_IMPACT_SCHEMA,
-  },
-  required: ['reply', 'plausibilityJudgment', 'sceneEnded'],
   additionalProperties: false,
 };

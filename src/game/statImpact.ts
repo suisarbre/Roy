@@ -1,20 +1,17 @@
-import type { HiddenStats, Npc, NpcId, ObservableStats, StatImpact } from './types';
+import type { Language } from '../i18n';
+import { GENERIC_CHRONIC_LABEL } from './textTemplates';
+import type { HiddenStats, MentalSymptomTag, Npc, NpcId, ObservableStats, OutcomeImpact } from './types';
 
-// 모델이 절대 수치를 직접 제안하기로 했기 때문에(작은 모델이 숫자를 과하게/이상하게 낼 위험이
-// 있음), 코드 쪽에서 "사건 하나가 한 턴에 낼 수 있는 최대 변화폭"을 클램핑한다. 이건 밸런스
-// 조정이 아니라 안전장치다 — 값 자체는 전부 임시.
-const MAX_ABS_NET_WORTH_DELTA = 3000;
-const MAX_ABS_HIDDEN_DEBT_DELTA = 3000;
-const MAX_ABS_CREDIT_STANDING_DELTA = 30;
-const MAX_ABS_STRESS_DELTA = 30;
-const MAX_ABS_BURNOUT_DELTA = 30;
-const MAX_ABS_RELATIONSHIP_DELTA = 30;
-const MAX_ABS_DISEASE_PROGRESS_DELTA = 20;
-const MAX_CHRONIC_SEED_SEVERITY = 100;
-
-function clamp(value: number, maxAbs: number): number {
-  return Math.max(-maxAbs, Math.min(maxAbs, value));
-}
+/**
+ * 등급(minor/moderate/major)을 실제 숫자로 바꾸는 테이블. 모델이 숫자를 직접 안 내므로
+ * 클램핑이 아니라 이 표 자체가 "사건 하나가 낼 수 있는 변화폭"의 정의다 — 밸런스 조정이
+ * 필요하면 여기 값만 만지면 된다.
+ */
+const FINANCE_NET_WORTH_BY_MAGNITUDE = { minor: 300, moderate: 1000, major: 3000 };
+const FINANCE_CREDIT_BY_MAGNITUDE = { minor: 5, moderate: 15, major: 30 };
+const MENTAL_STRESS_BY_MAGNITUDE = { minor: 5, moderate: 15, major: 30 };
+const RELATIONSHIP_BY_MAGNITUDE = { minor: 5, moderate: 15, major: 30 };
+const HEALTH_SEVERITY_BY_MAGNITUDE = { minor: 10, moderate: 25, major: 45 };
 
 function clampRange(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -27,123 +24,120 @@ export interface StatImpactResult {
 }
 
 /**
- * PlausibilityJudgment를 실제 상태 변화로 옮기는 유일한 채널. 메인 모델이 detail 턴/씬의
- * significant 교환에서 산출한 StatImpact를 여기서 적용한다 — statDrift.ts의 수동적 배경
+ * PlausibilityJudgment를 실제 상태 변화로 옮기는 유일한 채널. statDrift.ts의 수동적 배경
  * 드리프트와는 별개로, "이 사건이 실제로 결과를 냈다"를 구조적으로 기록하는 부분.
+ *
+ * 예전엔 모델이 9개 숫자 필드를 직접 냈지만(라우터 제거 + 모델 축소와 함께 바꿈, 사용자
+ * 결정), 작은 모델이 여러 숫자를 동시에 잘 보정하긴 어려워서 axis/direction/magnitude
+ * 정성적 등급 하나만 받고, 실제 숫자는 위 테이블로 이 함수가 결정한다.
  */
-export function applyStatImpact(
+export function applyOutcomeImpact(
   hidden: HiddenStats,
   observable: ObservableStats,
   npcs: Record<NpcId, Npc>,
-  impact: StatImpact | undefined,
+  impact: OutcomeImpact | undefined,
+  newVisibleSymptom: MentalSymptomTag | undefined,
+  language: Language,
 ): StatImpactResult {
-  if (!impact) return { hidden, observable, npcs };
-
   let nextHidden = hidden;
   let nextObservable = observable;
   let nextNpcs = npcs;
 
-  if (impact.netWorthDelta || impact.hiddenDebtDelta || impact.creditStandingDelta) {
-    nextHidden = {
-      ...nextHidden,
-      finance: {
-        ...nextHidden.finance,
-        netWorth: nextHidden.finance.netWorth + clamp(impact.netWorthDelta ?? 0, MAX_ABS_NET_WORTH_DELTA),
-        hiddenDebt: nextHidden.finance.hiddenDebt + clamp(impact.hiddenDebtDelta ?? 0, MAX_ABS_HIDDEN_DEBT_DELTA),
-        creditStanding: clampRange(
-          nextHidden.finance.creditStanding + clamp(impact.creditStandingDelta ?? 0, MAX_ABS_CREDIT_STANDING_DELTA),
-          0,
-          100,
-        ),
-      },
-    };
-  }
+  if (impact) {
+    const sign = impact.direction === 'positive' ? 1 : -1;
 
-  if (impact.stressDelta || impact.burnoutDelta) {
-    nextHidden = {
-      ...nextHidden,
-      mentalHealth: {
-        stressAccumulation: clampRange(
-          nextHidden.mentalHealth.stressAccumulation + clamp(impact.stressDelta ?? 0, MAX_ABS_STRESS_DELTA),
-          0,
-          100,
-        ),
-        burnoutLevel: clampRange(
-          nextHidden.mentalHealth.burnoutLevel + clamp(impact.burnoutDelta ?? 0, MAX_ABS_BURNOUT_DELTA),
-          0,
-          100,
-        ),
-      },
-    };
-  }
-
-  if (impact.newChronicSeed) {
-    nextHidden = {
-      ...nextHidden,
-      health: {
-        ...nextHidden.health,
-        chronicSeeds: [
-          ...nextHidden.health.chronicSeeds,
-          {
-            id: crypto.randomUUID(),
-            label: impact.newChronicSeed.label,
-            severity: clampRange(impact.newChronicSeed.severity, 0, MAX_CHRONIC_SEED_SEVERITY),
-            diagnosed: false,
-          },
-        ],
-      },
-    };
-  }
-
-  if (impact.diseaseProgressDelta) {
-    const diseaseProgress = { ...nextHidden.health.diseaseProgress };
-    for (const [diseaseId, delta] of Object.entries(impact.diseaseProgressDelta)) {
-      const current = diseaseProgress[diseaseId] ?? 0;
-      diseaseProgress[diseaseId] = clampRange(current + clamp(delta, MAX_ABS_DISEASE_PROGRESS_DELTA), 0, 100);
-    }
-    nextHidden = { ...nextHidden, health: { ...nextHidden.health, diseaseProgress } };
-  }
-
-  if (impact.newVisibleSymptom) {
-    const symptom = impact.newVisibleSymptom;
-    if (!nextObservable.mentalHealth.visibleSymptoms.includes(symptom)) {
-      nextObservable = {
-        ...nextObservable,
-        mentalHealth: {
-          visibleSymptoms: [...nextObservable.mentalHealth.visibleSymptoms, symptom],
-        },
-      };
-    }
-  }
-
-  if (impact.relationshipDelta) {
-    const { npcId, trustDelta, affectionDelta, resentmentDelta } = impact.relationshipDelta;
-    const npc = nextNpcs[npcId];
-    if (npc) {
-      nextNpcs = {
-        ...nextNpcs,
-        [npcId]: {
-          ...npc,
-          hiddenRelationship: {
-            trust: clampRange(
-              npc.hiddenRelationship.trust + clamp(trustDelta ?? 0, MAX_ABS_RELATIONSHIP_DELTA),
+    switch (impact.axis) {
+      case 'finance': {
+        nextHidden = {
+          ...nextHidden,
+          finance: {
+            ...nextHidden.finance,
+            netWorth: nextHidden.finance.netWorth + sign * FINANCE_NET_WORTH_BY_MAGNITUDE[impact.magnitude],
+            creditStanding: clampRange(
+              nextHidden.finance.creditStanding + sign * FINANCE_CREDIT_BY_MAGNITUDE[impact.magnitude],
               0,
               100,
             ),
-            affection: clampRange(
-              npc.hiddenRelationship.affection + clamp(affectionDelta ?? 0, MAX_ABS_RELATIONSHIP_DELTA),
-              0,
-              100,
-            ),
-            accumulatedResentment: Math.max(
-              0,
-              npc.hiddenRelationship.accumulatedResentment + clamp(resentmentDelta ?? 0, MAX_ABS_RELATIONSHIP_DELTA),
-            ),
           },
-        },
-      };
+        };
+        break;
+      }
+
+      case 'mentalHealth': {
+        // 부호가 finance/relationship과 반대다: direction:'positive'(좋은 결과)는 스트레스를
+        // '내려야' 한다 — "더 많은 스트레스"가 아니라 "더 적은 스트레스"가 긍정적 결과다.
+        const delta = -sign * MENTAL_STRESS_BY_MAGNITUDE[impact.magnitude];
+        nextHidden = {
+          ...nextHidden,
+          mentalHealth: {
+            stressAccumulation: clampRange(nextHidden.mentalHealth.stressAccumulation + delta, 0, 100),
+            burnoutLevel: clampRange(nextHidden.mentalHealth.burnoutLevel + delta * 0.6, 0, 100),
+          },
+        };
+        break;
+      }
+
+      case 'health': {
+        if (impact.direction === 'negative') {
+          const label = impact.note?.trim() || GENERIC_CHRONIC_LABEL[language];
+          nextHidden = {
+            ...nextHidden,
+            health: {
+              ...nextHidden.health,
+              chronicSeeds: [
+                ...nextHidden.health.chronicSeeds,
+                {
+                  id: crypto.randomUUID(),
+                  label,
+                  severity: HEALTH_SEVERITY_BY_MAGNITUDE[impact.magnitude],
+                  diagnosed: false,
+                },
+              ],
+            },
+          };
+        } else if (nextHidden.health.chronicSeeds.length > 0) {
+          // 긍정적 건강 변화 — 가장 심각한 기존 시드를 완화(호전)시킨다. 새로 만들 시드가
+          // 없으니 direction:'positive'에는 note가 필요 없다.
+          const seeds = nextHidden.health.chronicSeeds;
+          const worstIndex = seeds.reduce((worst, seed, i) => (seed.severity > seeds[worst].severity ? i : worst), 0);
+          const relief = HEALTH_SEVERITY_BY_MAGNITUDE[impact.magnitude];
+          const updatedSeeds = [...seeds];
+          updatedSeeds[worstIndex] = {
+            ...updatedSeeds[worstIndex],
+            severity: clampRange(updatedSeeds[worstIndex].severity - relief, 0, 100),
+          };
+          nextHidden = { ...nextHidden, health: { ...nextHidden.health, chronicSeeds: updatedSeeds } };
+        }
+        break;
+      }
+
+      case 'relationship': {
+        const npc = impact.relationshipNpcId ? nextNpcs[impact.relationshipNpcId] : undefined;
+        if (npc && impact.relationshipNpcId) {
+          const delta = sign * RELATIONSHIP_BY_MAGNITUDE[impact.magnitude];
+          nextNpcs = {
+            ...nextNpcs,
+            [impact.relationshipNpcId]: {
+              ...npc,
+              hiddenRelationship: {
+                trust: clampRange(npc.hiddenRelationship.trust + delta, 0, 100),
+                affection: clampRange(npc.hiddenRelationship.affection + delta, 0, 100),
+                accumulatedResentment: Math.max(0, npc.hiddenRelationship.accumulatedResentment - delta),
+              },
+            },
+          };
+        }
+        // relationshipNpcId가 없거나 존재하지 않는 NPC면(환각/오타) 조용히 무시.
+        break;
+      }
     }
-    // npcId가 존재하지 않으면(환각/오타) 조용히 무시 — 다른 채널들과 같은 방어 패턴.
+  }
+
+  if (newVisibleSymptom && !nextObservable.mentalHealth.visibleSymptoms.includes(newVisibleSymptom)) {
+    nextObservable = {
+      ...nextObservable,
+      mentalHealth: { visibleSymptoms: [...nextObservable.mentalHealth.visibleSymptoms, newVisibleSymptom] },
+    };
   }
 
   return { hidden: nextHidden, observable: nextObservable, npcs: nextNpcs };

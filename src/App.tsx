@@ -2,7 +2,7 @@ import type { MLCEngine } from '@mlc-ai/web-llm';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { EngineLoadProgress } from './game/llm/engine';
 import { loadSharedEngine } from './game/llm/engine';
-import { createWebLLMMainModel, createWebLLMRouterModel } from './game/llm/webllmClients';
+import { createWebLLMModel } from './game/llm/webllmClients';
 import { useGameStore } from './game/store';
 import type { GameLoopDeps } from './game/gameLoop';
 import { formatStatus, getDeathText, LANGUAGES, UI_STRINGS } from './i18n';
@@ -57,8 +57,7 @@ function App() {
     if (!engineState.engine) return null;
     const engine = engineState.engine;
     return {
-      routerModel: createWebLLMRouterModel(engine, language),
-      mainModel: createWebLLMMainModel(engine, language, setStreamingNarrative),
+      model: createWebLLMModel(engine, language, setStreamingNarrative),
       language,
     };
   }, [language, engineState.engine, setStreamingNarrative]);

@@ -1,60 +1,28 @@
 import type { MLCEngine } from '@mlc-ai/web-llm';
 import type { Language } from '../../i18n';
-import { MAIN_MODEL_ID, ROUTER_MODEL_ID } from './engine';
-import {
-  buildMainTurnPrompt,
-  buildRouterTurnPrompt,
-  buildSceneClassifyPrompt,
-  buildSceneSummaryPrompt,
-  buildSceneTurnPrompt,
-} from './prompts';
-import {
-  MAIN_TURN_RESPONSE_SCHEMA,
-  ROUTER_OUTPUT_SCHEMA,
-  SCENE_CLASSIFY_SCHEMA,
-  SCENE_SUMMARY_SCHEMA,
-  SCENE_TURN_RESPONSE_SCHEMA,
-  type JsonSchema,
-} from './schemas';
+import { buildSceneSummaryPrompt, buildSceneTurnPrompt, buildTurnPrompt } from './prompts';
+import { SCENE_SUMMARY_SCHEMA, SCENE_TURN_RESPONSE_SCHEMA, TURN_RESPONSE_SCHEMA, type JsonSchema } from './schemas';
 import type {
-  MainModelClient,
-  MainTurnRequest,
-  MainTurnResponse,
-  RouterModelClient,
-  RouterTurnRequest,
-  SceneClassifyRequest,
-  SceneClassifyResponse,
+  GameModelClient,
   SceneSummary,
   SceneSummaryRequest,
   SceneTurnRequest,
   SceneTurnResponse,
+  TurnRequest,
+  TurnResponse,
 } from './types';
-import type {
-  ParsedIntent,
-  PlausibilityJudgment,
-  ProposedMemoryEdge,
-  ProposedMemoryNode,
-  ProposedNpc,
-  RouterOutput,
-  StatImpact,
-} from '../types';
+import type { MentalSymptomTag, OutcomeImpact, PlausibilityJudgment, ProposedMemoryEdge, ProposedMemoryNode, ProposedNpc, MemoryGraphDelta } from '../types';
 
-/**
- * 라우터는 분류/파싱이 목적이라 낮은 온도(거의 결정적), 메인은 서사를 쓰므로 약간의 다양성을
- * 허용한다. 둘 다 response_format의 grammar 제약 때문에 형식이 깨질 위험은 낮지만, 온도가
- * 너무 높으면 grammar 제약 안에서도 내용이 산만해질 수 있어 보수적으로 잡는다.
- */
-const ROUTER_TEMPERATURE = 0.3;
-const MAIN_TEMPERATURE = 0.8;
+/** 서사를 쓰는 호출이라 약간의 다양성을 허용한다. 문법 제약(response_format) 덕에 형식이
+ *  깨질 위험은 낮지만, 온도가 너무 높으면 그 안에서도 내용이 산만해질 수 있어 보수적으로 잡는다. */
+const TEMPERATURE = 0.8;
 
 /**
  * 응답 길이 안전장치이자 실질적인 속도 레버 — 디코딩(출력 생성)은 토큰당 순차 비용이라
  * prefill보다 훨씬 비싸다. 프롬프트에서 "2-4문장/1-3문장"으로 분량을 조여둔 것과 맞춰서
- * 캡도 그만큼만 넉넉히 두고 낮춘다(예전엔 문단 단위를 가정해서 더 크게 잡혀 있었다).
- * 캡에 걸리면 grammar가 강제로 객체를 닫으려 시도한다.
+ * 캡도 그만큼만 넉넉히 둔다. 캡에 걸리면 grammar가 강제로 객체를 닫으려 시도한다.
  */
-const ROUTER_MAX_TOKENS = 300;
-const MAIN_MAX_TOKENS = 400;
+const MAX_TOKENS = 400;
 
 const MAX_JSON_RETRIES = 1;
 
@@ -108,24 +76,20 @@ export function extractStreamingStringField(buffer: string, fieldName: string): 
 
 async function completeJson(
   engine: MLCEngine,
-  modelId: string,
   system: string,
   user: string,
   schema: JsonSchema,
-  temperature: number,
-  maxTokens: number,
 ): Promise<Record<string, unknown>> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_JSON_RETRIES; attempt++) {
     try {
       const completion = await engine.chat.completions.create({
-        model: modelId,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        temperature,
-        max_tokens: maxTokens,
+        temperature: TEMPERATURE,
+        max_tokens: MAX_TOKENS,
         response_format: { type: 'json_object', schema: JSON.stringify(schema) },
       });
       const content = completion.choices[0]?.message?.content;
@@ -149,12 +113,9 @@ async function completeJson(
  */
 async function completeJsonStreaming(
   engine: MLCEngine,
-  modelId: string,
   system: string,
   user: string,
   schema: JsonSchema,
-  temperature: number,
-  maxTokens: number,
   streamFieldName: string,
   onPartial?: (text: string) => void,
 ): Promise<Record<string, unknown>> {
@@ -162,13 +123,12 @@ async function completeJsonStreaming(
   for (let attempt = 0; attempt <= MAX_JSON_RETRIES; attempt++) {
     try {
       const stream = await engine.chat.completions.create({
-        model: modelId,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        temperature,
-        max_tokens: maxTokens,
+        temperature: TEMPERATURE,
+        max_tokens: MAX_TOKENS,
         response_format: { type: 'json_object', schema: JSON.stringify(schema) },
         stream: true,
       });
@@ -199,17 +159,7 @@ async function completeJsonStreaming(
 
 // ---- 응답 정규화: 스키마상 생략된(optional) 필드를 TS의 undefined로 다룬다 ----
 
-function normalizeParsedIntent(raw: unknown): ParsedIntent | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  return {
-    actionType: r.actionType as ParsedIntent['actionType'],
-    target: nullToUndefined(r.target as string | null | undefined),
-    contextTags: Array.isArray(r.contextTags) ? (r.contextTags as string[]) : [],
-  };
-}
-
-function normalizeMemoryGraphDelta(raw: unknown): RouterOutput['memoryGraphDelta'] {
+function normalizeMemoryGraphDelta(raw: unknown): MemoryGraphDelta {
   const r = (raw ?? {}) as Record<string, unknown>;
   const newNodes = Array.isArray(r.newNodes)
     ? (r.newNodes as Record<string, unknown>[]).map(
@@ -256,27 +206,16 @@ function normalizePlausibilityJudgment(raw: unknown): PlausibilityJudgment {
   };
 }
 
-function normalizeStatImpact(raw: unknown): StatImpact | undefined {
+function normalizeOutcomeImpact(raw: unknown): OutcomeImpact | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
-  const relationshipDeltaRaw = r.relationshipDelta as Record<string, unknown> | null | undefined;
+  if (!r.axis || !r.direction || !r.magnitude) return undefined; // 필수 필드 없이는 불완전한 판단이라 무시.
   return {
-    netWorthDelta: nullToUndefined(r.netWorthDelta as number | null | undefined),
-    hiddenDebtDelta: nullToUndefined(r.hiddenDebtDelta as number | null | undefined),
-    creditStandingDelta: nullToUndefined(r.creditStandingDelta as number | null | undefined),
-    stressDelta: nullToUndefined(r.stressDelta as number | null | undefined),
-    burnoutDelta: nullToUndefined(r.burnoutDelta as number | null | undefined),
-    relationshipDelta: relationshipDeltaRaw
-      ? {
-          npcId: String(relationshipDeltaRaw.npcId),
-          trustDelta: nullToUndefined(relationshipDeltaRaw.trustDelta as number | null | undefined),
-          affectionDelta: nullToUndefined(relationshipDeltaRaw.affectionDelta as number | null | undefined),
-          resentmentDelta: nullToUndefined(relationshipDeltaRaw.resentmentDelta as number | null | undefined),
-        }
-      : undefined,
-    newChronicSeed: nullToUndefined(r.newChronicSeed as StatImpact['newChronicSeed'] | null | undefined),
-    diseaseProgressDelta: nullToUndefined(r.diseaseProgressDelta as StatImpact['diseaseProgressDelta'] | null | undefined),
-    newVisibleSymptom: nullToUndefined(r.newVisibleSymptom as StatImpact['newVisibleSymptom'] | null | undefined),
+    axis: r.axis as OutcomeImpact['axis'],
+    direction: r.direction as OutcomeImpact['direction'],
+    magnitude: r.magnitude as OutcomeImpact['magnitude'],
+    relationshipNpcId: nullToUndefined(r.relationshipNpcId as string | null | undefined),
+    note: nullToUndefined(r.note as string | null | undefined),
   };
 }
 
@@ -288,104 +227,54 @@ function normalizeDeath(raw: unknown): { cause: string } | null {
 
 // ---- 클라이언트 팩토리 ----
 
-export function createWebLLMRouterModel(engine: MLCEngine, language: Language): RouterModelClient {
-  return {
-    async runRouterTurn(request: RouterTurnRequest): Promise<RouterOutput> {
-      const { system, user } = buildRouterTurnPrompt(request, language);
-      const raw = await completeJson(engine, ROUTER_MODEL_ID, system, user, ROUTER_OUTPUT_SCHEMA, ROUTER_TEMPERATURE, ROUTER_MAX_TOKENS);
-      const turnType = raw.turnType === 'detail' ? 'detail' : 'skip';
-      return {
-        turnType,
-        intent: turnType === 'detail' ? normalizeParsedIntent(raw.intent) : null,
-        elapsedMonths: typeof raw.elapsedMonths === 'number' ? Math.max(0, Math.round(raw.elapsedMonths)) : 0,
-        suddenDeath: normalizeDeath(raw.suddenDeath),
-        eraEventTriggered: nullToUndefined(raw.eraEventTriggered as string | null | undefined),
-        newNpcs: normalizeNewNpcs(raw.newNpcs),
-        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
-      };
-    },
-
-    async classifySceneExchange(request: SceneClassifyRequest): Promise<SceneClassifyResponse> {
-      const { system, user } = buildSceneClassifyPrompt(request, language);
-      const raw = await completeJson(engine, ROUTER_MODEL_ID, system, user, SCENE_CLASSIFY_SCHEMA, ROUTER_TEMPERATURE, ROUTER_MAX_TOKENS);
-      return {
-        significance: raw.significance === 'significant' ? 'significant' : 'trivial',
-        trivialReply: nullToUndefined(raw.trivialReply as string | null | undefined),
-        requiresPlausibilityJudgment: Boolean(raw.requiresPlausibilityJudgment),
-        sceneEnded: Boolean(raw.sceneEnded),
-      };
-    },
-
-    async summarizeScene(request: SceneSummaryRequest): Promise<SceneSummary> {
-      const { system, user } = buildSceneSummaryPrompt(request, language);
-      const raw = await completeJson(engine, ROUTER_MODEL_ID, system, user, SCENE_SUMMARY_SCHEMA, ROUTER_TEMPERATURE, ROUTER_MAX_TOKENS);
-      return {
-        narrative: String(raw.narrative ?? ''),
-        elapsedMonths: typeof raw.elapsedMonths === 'number' ? Math.max(0, Math.round(raw.elapsedMonths)) : 0,
-        newNpcs: normalizeNewNpcs(raw.newNpcs),
-        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
-      };
-    },
-  };
-}
-
 /**
  * onNarrativeChunk를 주면 narrative/reply 필드가 스트리밍으로 채워지는 대로 콜백된다 —
  * App.tsx가 이걸 store의 streamingNarrative에 연결해서 "생성 중" 텍스트를 실시간으로 보여준다.
- * 최종 반환값은 스트림이 끝나고 전체 JSON이 파싱된 뒤에나 resolve된다(다른 필드들은
- * 스트리밍 중엔 아직 불완전하므로).
+ * runTurn/runSceneTurn만 스트리밍한다(서사가 사용자에게 보이는 호출) — summarizeScene은
+ * 매크로 로그에 한 번에 커밋될 압축 결과라 스트리밍할 이유가 없다.
  */
-export function createWebLLMMainModel(
-  engine: MLCEngine,
-  language: Language,
-  onNarrativeChunk?: (text: string) => void,
-): MainModelClient {
+export function createWebLLMModel(engine: MLCEngine, language: Language, onNarrativeChunk?: (text: string) => void): GameModelClient {
   return {
-    async runDetailTurn(request: MainTurnRequest): Promise<MainTurnResponse> {
-      const { system, user } = buildMainTurnPrompt(request, language);
-      const raw = await completeJsonStreaming(
-        engine,
-        MAIN_MODEL_ID,
-        system,
-        user,
-        MAIN_TURN_RESPONSE_SCHEMA,
-        MAIN_TEMPERATURE,
-        MAIN_MAX_TOKENS,
-        'narrative',
-        onNarrativeChunk,
-      );
+    async runTurn(request: TurnRequest): Promise<TurnResponse> {
+      const { system, user } = buildTurnPrompt(request, language);
+      const raw = await completeJsonStreaming(engine, system, user, TURN_RESPONSE_SCHEMA, 'narrative', onNarrativeChunk);
       const entersSceneRaw = raw.entersScene as Record<string, unknown> | null | undefined;
       return {
         narrative: String(raw.narrative ?? ''),
         plausibilityJudgment: normalizePlausibilityJudgment(raw.plausibilityJudgment),
+        outcomeImpact: normalizeOutcomeImpact(raw.outcomeImpact),
+        newVisibleSymptom: nullToUndefined(raw.newVisibleSymptom as MentalSymptomTag | null | undefined),
         death: normalizeDeath(raw.death),
         entersScene:
           entersSceneRaw && Array.isArray(entersSceneRaw.involvedNpcIds)
             ? { involvedNpcIds: entersSceneRaw.involvedNpcIds as string[] }
             : null,
-        statImpact: normalizeStatImpact(raw.statImpact),
+        newNpcs: normalizeNewNpcs(raw.newNpcs),
+        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
       };
     },
 
     async runSceneTurn(request: SceneTurnRequest): Promise<SceneTurnResponse> {
       const { system, user } = buildSceneTurnPrompt(request, language);
-      const raw = await completeJsonStreaming(
-        engine,
-        MAIN_MODEL_ID,
-        system,
-        user,
-        SCENE_TURN_RESPONSE_SCHEMA,
-        MAIN_TEMPERATURE,
-        MAIN_MAX_TOKENS,
-        'reply',
-        onNarrativeChunk,
-      );
+      const raw = await completeJsonStreaming(engine, system, user, SCENE_TURN_RESPONSE_SCHEMA, 'reply', onNarrativeChunk);
       return {
         reply: String(raw.reply ?? ''),
         plausibilityJudgment: normalizePlausibilityJudgment(raw.plausibilityJudgment),
         sceneEnded: Boolean(raw.sceneEnded),
+        outcomeImpact: normalizeOutcomeImpact(raw.outcomeImpact),
+        newVisibleSymptom: nullToUndefined(raw.newVisibleSymptom as MentalSymptomTag | null | undefined),
         death: normalizeDeath(raw.death),
-        statImpact: normalizeStatImpact(raw.statImpact),
+      };
+    },
+
+    async summarizeScene(request: SceneSummaryRequest): Promise<SceneSummary> {
+      const { system, user } = buildSceneSummaryPrompt(request, language);
+      const raw = await completeJson(engine, system, user, SCENE_SUMMARY_SCHEMA);
+      return {
+        narrative: String(raw.narrative ?? ''),
+        elapsedMonths: typeof raw.elapsedMonths === 'number' ? Math.max(0, Math.round(raw.elapsedMonths)) : 0,
+        newNpcs: normalizeNewNpcs(raw.newNpcs),
+        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
       };
     },
   };

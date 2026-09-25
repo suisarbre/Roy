@@ -19,7 +19,16 @@ import type {
 const SUDDEN_DEATH_CHANCE_PER_SKIP = 1 / 200;
 const SUDDEN_DEATH_CAUSES: Record<Language, string[]> = {
   ko: ['수면 중 심장마비', '교통사고', '뇌졸중'],
-  en: ['a heart attack in his sleep', 'a car accident', 'a stroke'],
+  en: ['A heart attack in his sleep', 'A car accident', 'A stroke'],
+  ja: ['睡眠中の心臓発作', '交通事故', '脳卒中'],
+  'zh-CN': ['睡梦中突发心脏病', '交通事故', '中风'],
+  'zh-TW': ['睡夢中突發心臟病', '交通事故', '中風'],
+  fr: ['Une crise cardiaque dans son sommeil', 'Un accident de voiture', 'Un AVC'],
+  de: ['Ein Herzinfarkt im Schlaf', 'Ein Autounfall', 'Ein Schlaganfall'],
+  es: ['Un infarto mientras dormía', 'Un accidente de coche', 'Un derrame cerebral'],
+  'pt-BR': ['Um infarto durante o sono', 'Um acidente de carro', 'Um derrame'],
+  ru: ['Сердечный приступ во сне', 'Автомобильная авария', 'Инсульт'],
+  it: ["Un infarto nel sonno", "Un incidente d'auto", 'Un ictus'],
 };
 /** 실제 라우터라면 서사 판단으로 알아서 detail을 낼 텐데, 목업은 그럴 능력이 없으니
  *  대충 이 확률로 흉내만 낸다 — 안 그러면 "계속하기"가 매번 MAX_CHAINED_SKIPS까지
@@ -28,11 +37,41 @@ const RANDOM_DETAIL_CHANCE_ON_SKIP = 0.15;
 const AUTO_EVENT_TAG: Record<Language, string> = {
   ko: '(자동 진행 중 발생한 사건)',
   en: '(something that happened while time passed)',
+  ja: '(時間が流れる中で起きた出来事)',
+  'zh-CN': '(时间流逝中发生的事)',
+  'zh-TW': '(時間流逝中發生的事)',
+  fr: "(quelque chose qui s'est passé avec le temps)",
+  de: '(etwas, das mit der Zeit geschah)',
+  es: '(algo que ocurrió con el paso del tiempo)',
+  'pt-BR': '(algo que aconteceu com o passar do tempo)',
+  ru: '(что-то, что произошло за это время)',
+  it: '(qualcosa accaduto col passare del tempo)',
 };
-const PLACEHOLDER_ACTION: Record<Language, string> = { ko: '그 일', en: 'that' };
+const PLACEHOLDER_ACTION: Record<Language, string> = {
+  ko: '그 일',
+  en: 'that',
+  ja: 'それ',
+  'zh-CN': '那件事',
+  'zh-TW': '那件事',
+  fr: 'cela',
+  de: 'das',
+  es: 'eso',
+  'pt-BR': 'isso',
+  ru: 'это',
+  it: 'quello',
+};
 const PLACEHOLDER_RESULT_SUFFIX: Record<Language, (action: string) => string> = {
   ko: (action) => `"${action}" — (아직 실제 모델이 연결되지 않아 결과를 알 수 없다.)`,
   en: (action) => `"${action}" — (no real model is connected yet, so the outcome is unknown.)`,
+  ja: (action) => `「${action}」 — （まだ実際のモデルが接続されていないため、結果は分からない。）`,
+  'zh-CN': (action) => `"${action}" — （尚未连接真实模型，结果未知。）`,
+  'zh-TW': (action) => `"${action}" — （尚未連接真實模型，結果未知。）`,
+  fr: (action) => `« ${action} » — (aucun modèle réel n'est encore connecté, le résultat est inconnu.)`,
+  de: (action) => `„${action}“ — (noch ist kein echtes Modell verbunden, das Ergebnis ist unbekannt.)`,
+  es: (action) => `"${action}" — (aún no hay un modelo real conectado, el resultado es desconocido.)`,
+  'pt-BR': (action) => `"${action}" — (ainda não há um modelo real conectado, o resultado é desconhecido.)`,
+  ru: (action) => `«${action}» — (реальная модель ещё не подключена, результат неизвестен.)`,
+  it: (action) => `"${action}" — (nessun modello reale è ancora connesso, l'esito è sconosciuto.)`,
 };
 
 function randomInt(min: number, max: number): number {

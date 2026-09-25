@@ -2,15 +2,15 @@ import type { MemoryEdge, MemoryNode } from './memory';
 
 export type TurnKind = 'skip' | 'detail';
 
-export type ActionCategory =
-  | 'routine'
-  | 'career'
-  | 'relationship'
-  | 'health'
-  | 'finance'
-  | 'crime'
-  | 'majorLifeAttempt' // 창업, 이민, 도박 등 "인생 역전 시도"
-  | 'eraForced'; // 징병 등 시대가 강제하는 이벤트
+/**
+ * 플레이어 입력에서 파싱되는 행동 분류.
+ * 범죄도 창업/이민/도박과 동일하게 'majorLifeAttempt'로 묶는다 — 문서 원칙:
+ * "범죄뿐 아니라 모든 인생 역전 시도에 동일하게 적용되는 프레임". 세부 구분은
+ * contextTags(예: 'crime', 'startup', 'immigration', 'gambling')로 한다.
+ * 시대 강제 이벤트(징병 등)는 플레이어 의도가 아니므로 여기 포함하지 않는다 —
+ * eraEvent.ts의 별도 트리거 파이프라인에서 처리한다.
+ */
+export type ActionCategory = 'routine' | 'career' | 'relationship' | 'health' | 'finance' | 'majorLifeAttempt';
 
 export interface ParsedIntent {
   actionType: ActionCategory;

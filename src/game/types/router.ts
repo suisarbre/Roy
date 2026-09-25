@@ -18,13 +18,27 @@ export interface ParsedIntent {
   contextTags: string[];
 }
 
+/** 라우터가 새로 제안하는 노드. 실제 id는 아직 없으므로, 같은 턴의 newEdges가 이 노드를
+ *  가리킬 수 있도록 라우터가 임의로 붙인 임시 참조용 id. */
+export interface ProposedMemoryNode extends Pick<MemoryNode, 'type' | 'content'> {
+  localId: string;
+}
+
+export interface ProposedMemoryEdge extends Pick<MemoryEdge, 'relation' | 'weight'> {
+  /** 기존 노드의 실제 id 또는 같은 델타 안 newNodes[].localId 중 하나 */
+  from: string;
+  to: string;
+}
+
 /** 소형 라우터 모델이 매 턴 산출하는 구조화 출력 */
 export interface RouterOutput {
   turnType: TurnKind;
   intent: ParsedIntent | null; // skip 턴에는 null일 수 있음
+  /** 이번 턴이 게임 시간상 몇 개월에 해당하는지. detail 턴은 보통 0(그 자리에서 벌어지는 사건). */
+  elapsedMonths: number;
   memoryGraphDelta: {
-    newNodes: Array<Pick<MemoryNode, 'type' | 'content'>>;
-    newEdges: Array<Pick<MemoryEdge, 'from' | 'to' | 'relation' | 'weight'>>;
+    newNodes: ProposedMemoryNode[];
+    newEdges: ProposedMemoryEdge[];
     /** 이번 턴에 참조된 기존 노드 id — 활성화 강화 대상 */
     accessedNodeIds: string[];
   };

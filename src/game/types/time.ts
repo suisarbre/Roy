@@ -14,6 +14,8 @@ export type LifeStage =
   | 'oldAge'; // 65+
 
 export interface GameClock {
+  /** 출생 연도. ageYears/lifeStage를 date에서 파생시키기 위한 기준점. */
+  birthYear: number;
   date: GameDate;
   ageYears: number;
   /** 스킵/디테일 턴 모두 포함한 단조 증가 카운터. 그래프 활성화 감쇠의 시간축으로 쓰인다. */

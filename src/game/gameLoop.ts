@@ -133,7 +133,7 @@ interface FinalizeParams {
   kind: TurnKind;
   playerInput?: string;
   narrative: string;
-  plausibilityJudgment?: PlausibilityJudgment;
+  plausibilityJudgments: PlausibilityJudgment[];
   death?: { cause: string } | null;
   /** 매크로 턴에서만 채워짐 — 씬 종료 커밋에는 없음 */
   routerOutput?: RouterOutput;
@@ -168,7 +168,7 @@ function finalizeTurn(
     playerInput: params.playerInput,
     narrative: params.narrative,
     routerOutput: params.routerOutput,
-    plausibilityJudgment: params.plausibilityJudgment,
+    plausibilityJudgments: params.plausibilityJudgments,
   };
 
   const nextState: GameState = {
@@ -277,7 +277,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     kind: routerOutput.turnType,
     playerInput: playerInput ?? undefined,
     narrative,
-    plausibilityJudgment,
+    plausibilityJudgments: plausibilityJudgment ? [plausibilityJudgment] : [],
     death,
     routerOutput,
     eraEventOccurrence,
@@ -293,6 +293,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
           involvedNpcIds: entersScene.involvedNpcIds,
           startedAtTurn: nextTurnIndex,
           exchanges: [],
+          judgments: [],
         },
       },
     };
@@ -340,7 +341,9 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   let plausibilityJudgment: PlausibilityJudgment | undefined;
   let death: { cause: string } | null | undefined;
 
-  if (classification.significance === 'trivial') {
+  const needsMainModel = classification.significance === 'significant' || classification.requiresPlausibilityJudgment;
+
+  if (!needsMainModel) {
     reply = classification.trivialReply ?? '...';
   } else {
     const seedNodeIds = scene.involvedNpcIds
@@ -371,13 +374,17 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
     index: scene.exchanges.length,
     playerInput,
     reply,
-    wasSignificant: classification.significance === 'significant',
+    wasSignificant: needsMainModel,
   };
   const updatedExchanges = [...scene.exchanges, exchange];
+  const updatedJudgments = plausibilityJudgment ? [...scene.judgments, plausibilityJudgment] : scene.judgments;
   const hitCap = updatedExchanges.length >= MAX_SCENE_EXCHANGES;
 
   if (!sceneEnded && !hitCap && !death) {
-    const nextState: GameState = { ...state, activeScene: { ...scene, exchanges: updatedExchanges } };
+    const nextState: GameState = {
+      ...state,
+      activeScene: { ...scene, exchanges: updatedExchanges, judgments: updatedJudgments },
+    };
     return { state: nextState, exchange };
   }
 
@@ -401,7 +408,7 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   const concluded = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, {
     kind: 'detail',
     narrative: summary.narrative,
-    plausibilityJudgment,
+    plausibilityJudgments: updatedJudgments,
     death,
   });
 

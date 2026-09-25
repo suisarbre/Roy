@@ -45,9 +45,16 @@ export interface SceneClassifyRequest {
 }
 
 export interface SceneClassifyResponse {
+  /** 대화 자체의 무게 — 응답 생성 비용(누가 대사를 쓸지)을 결정한다. */
   significance: 'trivial' | 'significant';
   /** significance가 'trivial'일 때만 사용 — 라우터가 직접 생성한 짧은 대사 */
   trivialReply?: string;
+  /**
+   * 대화는 잡담처럼 보여도, 그 안에서 위험한/결과가 따르는 행동이 시도됐다고 판단되면 true.
+   * significance와 별개의 축이다 — "대화가 가볍다"와 "이 행동은 판단이 필요하다"는 다른
+   * 질문이기 때문. 둘 중 하나라도 참이면 메인 모델로 넘어간다(라우터가 직접 대사를 짓지 않음).
+   */
+  requiresPlausibilityJudgment: boolean;
   /** 이 교환으로 씬이 자연스럽게 끝난다고 판단하면 true (하드 캡과 별개의 모델 신호) */
   sceneEnded: boolean;
 }

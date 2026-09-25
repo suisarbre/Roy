@@ -1,4 +1,5 @@
 import type { NpcId } from './npc';
+import type { PlausibilityJudgment } from './router';
 
 export interface SceneExchange {
   index: number;
@@ -18,4 +19,9 @@ export interface SceneState {
   involvedNpcIds: NpcId[];
   startedAtTurn: number;
   exchanges: SceneExchange[];
+  /**
+   * significant 교환마다 쌓인 개연성 판단 — 씬이 여러 번의 significant 교환을 거칠 수
+   * 있으므로, 마지막 것만 남기지 않고 전부 보존해서 씬 종료 시 로그에 같이 커밋한다.
+   */
+  judgments: PlausibilityJudgment[];
 }

@@ -1,9 +1,21 @@
+import type { MLCEngine } from '@mlc-ai/web-llm';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { createMockMainModel, createMockRouterModel } from './game/llm/mockClients';
+import type { EngineLoadProgress } from './game/llm/engine';
+import { loadSharedEngine } from './game/llm/engine';
+import { createWebLLMMainModel, createWebLLMRouterModel } from './game/llm/webllmClients';
 import { useGameStore } from './game/store';
 import type { GameLoopDeps } from './game/gameLoop';
 import { formatStatus, getDeathText, LANGUAGES, UI_STRINGS } from './i18n';
 import { useSettingsStore } from './settingsStore';
+
+interface EngineState {
+  status: 'loading' | 'ready' | 'error';
+  engine: MLCEngine | null;
+  progress: EngineLoadProgress | null;
+  error: Error | null;
+}
+
+const INITIAL_ENGINE_STATE: EngineState = { status: 'loading', engine: null, progress: null, error: null };
 
 function App() {
   const { state, isProcessingTurn, submitTurn, resetGame } = useGameStore();
@@ -12,12 +24,44 @@ function App() {
   const [input, setInput] = useState('');
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // 목업 클라이언트는 언어 설정을 클로저로 받으므로, 언어가 바뀌면 다시 만들어야 한다.
-  // 실제 WebLLM으로 교체될 때도 이 자리(deps 구성)만 바뀌면 된다.
-  const deps: GameLoopDeps = useMemo(
-    () => ({ routerModel: createMockRouterModel(language), mainModel: createMockMainModel(language), language }),
-    [language],
-  );
+  // 엔진(모델 가중치)은 언어와 무관하게 한 번만 로드한다 — deps 쪽(WebLLM 클라이언트)만
+  // 언어가 바뀔 때 다시 만들면 된다(프롬프트 언어 지시문만 갈아끼우는 것이므로 비용이 없다).
+  const [engineState, setEngineState] = useState<EngineState>(INITIAL_ENGINE_STATE);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEngineState(INITIAL_ENGINE_STATE);
+    loadSharedEngine((report) => {
+      if (!cancelled) setEngineState((prev) => ({ ...prev, progress: report }));
+    })
+      .then((engine) => {
+        if (cancelled) return;
+        setEngineState({ status: 'ready', engine, progress: null, error: null });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setEngineState({
+          status: 'error',
+          engine: null,
+          progress: null,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  const deps: GameLoopDeps | null = useMemo(() => {
+    if (!engineState.engine) return null;
+    const engine = engineState.engine;
+    return {
+      routerModel: createWebLLMRouterModel(engine, language),
+      mainModel: createWebLLMMainModel(engine, language),
+      language,
+    };
+  }, [language, engineState.engine]);
 
   const strings = UI_STRINGS[language];
   const exchangeCount = state.activeScene?.exchanges.length ?? 0;
@@ -28,13 +72,13 @@ function App() {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || isProcessingTurn) return;
+    if (!trimmed || isProcessingTurn || !deps) return;
     setInput('');
     void submitTurn(trimmed, deps);
   };
 
   const handleContinue = () => {
-    if (isProcessingTurn) return;
+    if (isProcessingTurn || !deps) return;
     void submitTurn(null, deps);
   };
 
@@ -52,6 +96,41 @@ function App() {
       ))}
     </div>
   );
+
+  if (engineState.status !== 'ready') {
+    return (
+      <div className="terminal">
+        {languageSwitcher}
+        <div className="model-loading">
+          <div className="model-loading-title">
+            {engineState.status === 'error' ? strings.modelErrorGeneric : strings.modelLoadingTitle}
+          </div>
+          {engineState.status === 'loading' && (
+            <>
+              <div className="model-loading-bar">
+                <div
+                  className="model-loading-bar-fill"
+                  style={{ width: `${Math.round((engineState.progress?.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+              <div className="model-loading-detail">{engineState.progress?.text ?? ''}</div>
+              <div className="model-loading-hint">{strings.modelLoadingHint}</div>
+            </>
+          )}
+          {engineState.status === 'error' && (
+            <>
+              <div className="model-loading-detail">
+                {engineState.error?.message === 'WebGPU_UNAVAILABLE' ? strings.modelErrorWebgpu : engineState.error?.message}
+              </div>
+              <button type="button" className="restart" onClick={() => setReloadToken((n) => n + 1)}>
+                {strings.modelRetryButton}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (state.status === 'dead' && state.deathInfo) {
     return (

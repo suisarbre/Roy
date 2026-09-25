@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { runTurn, type GameLoopDeps } from './gameLoop';
+import { runSceneExchange, runTurn, type GameLoopDeps } from './gameLoop';
 import { createInitialGameState } from './initialState';
 import type { GameState } from './types';
 
@@ -20,6 +20,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ isProcessingTurn: true });
     try {
       const { state } = get();
+
+      if (state.activeScene) {
+        if (playerInput === null) {
+          throw new Error('씬 진행 중에는 빈 입력으로 넘어갈 수 없습니다 — 대사를 입력해야 합니다.');
+        }
+        const { state: nextState } = await runSceneExchange(state, playerInput, deps);
+        set({ state: nextState });
+        return;
+      }
+
       const { state: nextState } = await runTurn(state, playerInput, deps);
       set({ state: nextState });
     } finally {

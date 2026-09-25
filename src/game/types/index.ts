@@ -5,4 +5,5 @@ export * from './memory';
 export * from './router';
 export * from './log';
 export * from './eraEvent';
+export * from './scene';
 export * from './state';

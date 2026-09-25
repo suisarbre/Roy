@@ -9,6 +9,7 @@ export interface TurnLogEntry {
   playerInput?: string;
   /** 플레이어에게 표시된 서사 텍스트 */
   narrative: string;
-  routerOutput: RouterOutput;
+  /** 매크로 턴에서만 채워짐 — 씬 종료로 커밋된 엔트리는 요약(SceneSummary)에서 나온 거라 없음 */
+  routerOutput?: RouterOutput;
   plausibilityJudgment?: PlausibilityJudgment;
 }

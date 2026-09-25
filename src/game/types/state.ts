@@ -2,6 +2,7 @@ import type { EraEventOccurrence } from './eraEvent';
 import type { TurnLogEntry } from './log';
 import type { MemoryGraph } from './memory';
 import type { NpcId, Npc } from './npc';
+import type { SceneState } from './scene';
 import type { HiddenStats, ObservableStats } from './stats';
 import type { GameClock } from './time';
 
@@ -24,4 +25,6 @@ export interface GameState {
   log: TurnLogEntry[];
   eraEventOccurrences: EraEventOccurrence[];
   deathInfo?: DeathInfo;
+  /** 있으면 지금 씬(대화 등) 진행 중 — 매크로 턴 대신 runSceneExchange로 처리해야 함 */
+  activeScene?: SceneState;
 }

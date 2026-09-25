@@ -1,5 +1,5 @@
 import { AMBIENT_RECALL_THRESHOLD, computeActivation } from './memoryActivation';
-import type { MemoryGraph, RouterOutput } from './types';
+import type { MemoryGraph, Npc, RecalledMemory, RouterOutput } from './types';
 
 export interface ApplyDeltaResult {
   graph: MemoryGraph;
@@ -167,4 +167,38 @@ export function filterDeltaForParticipant(
     newEdges: delta.newEdges,
     accessedNodeIds: delta.accessedNodeIds,
   };
+}
+
+/**
+ * 씬에서 이 NPC의 대사를 생성할 때 쓸 기억을 그 NPC의 "관점"으로 회수한다.
+ * major NPC는 자기만의 독립 그래프에서 회수 — 자기가 겪은 일만, 자기만의 활성화 곡선으로.
+ * minor NPC는 독립 그래프가 없으므로 공유 그래프에서 회수하되, 결과를 이 NPC가
+ * participantNpcIds로 태그된 노드로만 걸러낸다 — 목격 안 한 사건은 여전히 모른다.
+ */
+export function getRecalledMemoriesForNpc(
+  sharedGraph: MemoryGraph,
+  npc: Npc,
+  currentTurn: number,
+  seedNodeIds: string[],
+  minActivation: number = AMBIENT_RECALL_THRESHOLD,
+  limit = 12,
+): RecalledMemory[] {
+  if (npc.memoryGraph) {
+    // 독립 그래프는 id 공간이 공유 그래프와 다르다 — 공유 그래프 기준 시드는 대부분 여기
+    // 존재하지 않으므로, 실제 있는 것만 남긴다. 하나도 안 남으면 getRecalledMemoryNodeIds가
+    // 알아서 전역 활성화 상위로 대체한다 (독립 그래프는 이미 이 NPC 전용으로 작아서 그걸로 충분).
+    const validSeeds = seedNodeIds.filter((id) => npc.memoryGraph!.nodes[id] !== undefined);
+    const ids = getRecalledMemoryNodeIds(npc.memoryGraph, currentTurn, validSeeds, minActivation, limit);
+    return ids
+      .map((id) => npc.memoryGraph!.nodes[id])
+      .filter((node) => node !== undefined)
+      .map((node) => ({ id: node.id, type: node.type, content: node.content }));
+  }
+
+  const validSeeds = seedNodeIds.filter((id) => sharedGraph.nodes[id] !== undefined);
+  const ids = getRecalledMemoryNodeIds(sharedGraph, currentTurn, validSeeds, minActivation, limit);
+  return ids
+    .map((id) => sharedGraph.nodes[id])
+    .filter((node) => node !== undefined && node.participantNpcIds?.includes(npc.id))
+    .map((node) => ({ id: node.id, type: node.type, content: node.content }));
 }

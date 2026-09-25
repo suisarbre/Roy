@@ -48,3 +48,10 @@ export interface MemoryGraph {
 export function createEmptyMemoryGraph(): MemoryGraph {
   return { nodes: {}, edges: {}, adjacency: {} };
 }
+
+/** 회수된 기억을 LLM 클라이언트에 넘길 때 쓰는 압축 형태 — 전체 노드가 아니라 이것만 넘긴다. */
+export interface RecalledMemory {
+  id: string;
+  type: MemoryNodeType;
+  content: string;
+}

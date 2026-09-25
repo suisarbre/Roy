@@ -71,14 +71,20 @@ interface DeltaApplicationResult {
   memoryGraph: MemoryGraph;
   npcs: Record<NpcId, Npc>;
   newNodeIds: string[];
-  /** 이번에 참여자로 태그된 NPC id — 관계 스탯 드리프트(안 만난 관계만 식음)에도 재사용된다. */
+  /** 이번에 참여자로 태그된 NPC id — 관계 드리프트, 그리고 이후 encodeIntoParticipantGraphs에도 재사용된다. */
   participantNpcIds: Set<NpcId>;
+  /** localId가 실제 id로 해소된 델타 — encodeIntoParticipantGraphs가 그대로 재사용한다. */
+  resolvedDelta: RouterOutput['memoryGraphDelta'];
 }
 
 /**
  * runTurn(매크로)과 씬 종료 커밋이 공유하는 부분: 그래프 델타 반영 + NPC 생성/중요도 갱신.
  * 둘 다 "이번에 뭐가 일어났는지"를 결정하는 방식은 다르지만, 그 결과(델타+신규 NPC 제안)를
  * 실제 상태에 반영하는 절차는 완전히 동일하다.
+ *
+ * NPC 자기 그래프 각인(encodeIntoParticipantGraphs)은 여기 포함되지 않는다 — 그 결정은
+ * 이번 사건이 significant했는지(PlausibilityJudgment)를 참고해야 하는데, 그 판단은 라우터가
+ * 만든 델타를 적용한 *이후에* 메인 모델을 불러야만 나오기 때문에 구조상 분리해야 한다.
  */
 function applyDeltaAndNpcs(
   state: GameState,
@@ -104,31 +110,42 @@ function applyDeltaAndNpcs(
     nextTurnIndex,
   );
 
-  // 모든 NPC(기존 + 신규)를 한 번씩 갱신한다: 이번에 등장한 참여자는 중요도가 오르고(+확률적으로
-  // 자기 그래프에 각인), 참여하지 않은 NPC는 elapsedMonths만큼 중요도가 깎이고(가족 예외)
-  // 관계 감정도 식는다(가족도 예외 없음 — 별개의 축).
+  // 모든 NPC(기존 + 신규)를 한 번씩 갱신한다: 이번에 등장한 참여자는 중요도가 오르고,
+  // 참여하지 않은 NPC는 elapsedMonths만큼 중요도가 깎이고(가족 예외) 관계 감정도 식는다
+  // (가족도 예외 없음 — 별개의 축). 자기 그래프 각인은 이후 별도 단계에서 처리한다.
   const participantNpcIds = new Set(getParticipantNpcIdsInDelta(resolvedDelta, memoryGraph));
   const npcs: Record<NpcId, Npc> = {};
   for (const [npcId, npc] of Object.entries({ ...state.npcs, ...newNpcs })) {
-    if (!participantNpcIds.has(npcId)) {
-      npcs[npcId] = driftNpcRelationship(applyImportanceDecay(npc, elapsedMonths), elapsedMonths);
-      continue;
-    }
-
-    let updatedNpc = registerNpcAppearance(npc, memoryGraph);
-    if (shouldEncodeIntoNpcMemory(updatedNpc)) {
-      const npcDelta = filterDeltaForParticipant(resolvedDelta, npcId);
-      const { graph: npcMemoryGraph } = applyMemoryGraphDelta(
-        updatedNpc.memoryGraph ?? createEmptyMemoryGraph(),
-        npcDelta,
-        nextTurnIndex,
-      );
-      updatedNpc = { ...updatedNpc, memoryGraph: npcMemoryGraph };
-    }
-    npcs[npcId] = updatedNpc;
+    npcs[npcId] = participantNpcIds.has(npcId)
+      ? registerNpcAppearance(npc, memoryGraph)
+      : driftNpcRelationship(applyImportanceDecay(npc, elapsedMonths), elapsedMonths);
   }
 
-  return { memoryGraph, npcs, newNodeIds, participantNpcIds };
+  return { memoryGraph, npcs, newNodeIds, participantNpcIds, resolvedDelta };
+}
+
+/**
+ * 이번 사건이 참여자로 태그된 major NPC 각자의 독립 그래프에도 각인될지를 확률적으로 정하고,
+ * 각인되면 그 NPC 시점으로 필터링된 델타를 그의 그래프에 반영한다. applyDeltaAndNpcs와
+ * 분리된 이유는 위 주석 참고 — PlausibilityJudgment가 나온 뒤에만 호출할 수 있다.
+ */
+function encodeIntoParticipantGraphs(
+  npcs: Record<NpcId, Npc>,
+  resolvedDelta: RouterOutput['memoryGraphDelta'],
+  participantNpcIds: ReadonlySet<NpcId>,
+  nextTurnIndex: number,
+  wasSignificantEvent: boolean,
+): Record<NpcId, Npc> {
+  const updated = { ...npcs };
+  for (const npcId of participantNpcIds) {
+    const npc = updated[npcId];
+    if (!npc || !shouldEncodeIntoNpcMemory(npc, wasSignificantEvent)) continue;
+
+    const npcDelta = filterDeltaForParticipant(resolvedDelta, npcId);
+    const { graph: npcMemoryGraph } = applyMemoryGraphDelta(npc.memoryGraph ?? createEmptyMemoryGraph(), npcDelta, nextTurnIndex);
+    updated[npcId] = { ...npc, memoryGraph: npcMemoryGraph };
+  }
+  return updated;
 }
 
 interface FinalizeParams {
@@ -222,13 +239,13 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     relevantEraEvents,
   });
 
-  const { memoryGraph, npcs: npcsAfterDelta, newNodeIds } = applyDeltaAndNpcs(
-    state,
-    nextTurnIndex,
-    routerOutput.elapsedMonths,
-    routerOutput.memoryGraphDelta,
-    routerOutput.newNpcs,
-  );
+  const {
+    memoryGraph,
+    npcs: npcsAfterDelta,
+    newNodeIds,
+    participantNpcIds,
+    resolvedDelta,
+  } = applyDeltaAndNpcs(state, nextTurnIndex, routerOutput.elapsedMonths, routerOutput.memoryGraphDelta, routerOutput.newNpcs);
   const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, routerOutput.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
@@ -270,6 +287,12 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     narrative = buildSkipNarrative(routerOutput.elapsedMonths);
     death = routerOutput.suddenDeath;
   }
+
+  // 사건이 significant했으면(개연성 판단이 neutral이 아니었으면) 참여자의 자기 그래프 각인
+  // 확률에 보정치를 준다 — PlausibilityJudgment가 나온 뒤에만 알 수 있어서 applyDeltaAndNpcs
+  // 안이 아니라 여기서 처리한다. skip 턴(판단 자체가 없음)은 기본 확률 그대로.
+  const wasSignificantEvent = plausibilityJudgment !== undefined && plausibilityJudgment.verdict !== 'neutral';
+  npcs = encodeIntoParticipantGraphs(npcs, resolvedDelta, participantNpcIds, nextTurnIndex, wasSignificantEvent);
 
   // 시대 이벤트는 항상 detail로 제대로 서술돼야 기록한다. 라우터가 skip 턴에 잘못 끼워
   // 넣었거나(모순), 이번 턴에 제시하지도 않은 id를 지어냈거나(환각), 라우터가 계산한
@@ -414,17 +437,26 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   });
 
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const { memoryGraph, npcs: npcsAfterDelta } = applyDeltaAndNpcs(
-    stateWithImpact,
-    nextTurnIndex,
-    summary.elapsedMonths,
-    summary.memoryGraphDelta,
-    summary.newNpcs,
-  );
+  const {
+    memoryGraph,
+    npcs: npcsAfterDelta,
+    participantNpcIds,
+    resolvedDelta,
+  } = applyDeltaAndNpcs(stateWithImpact, nextTurnIndex, summary.elapsedMonths, summary.memoryGraphDelta, summary.newNpcs);
   const hiddenAfterDrift = applyHiddenStatDrift(stateWithImpact.hidden, summary.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, summary.elapsedMonths);
 
-  const concluded = finalizeTurn(stateWithImpact, nextTurnIndex, nextClock, memoryGraph, npcsAfterDelta, hiddenAfterDrift, observable, {
+  // 씬 전체에서 나온 판단 중 하나라도 neutral이 아니면 significant로 취급.
+  const wasSceneSignificant = updatedJudgments.some((judgment) => judgment.verdict !== 'neutral');
+  const npcsAfterEncoding = encodeIntoParticipantGraphs(
+    npcsAfterDelta,
+    resolvedDelta,
+    participantNpcIds,
+    nextTurnIndex,
+    wasSceneSignificant,
+  );
+
+  const concluded = finalizeTurn(stateWithImpact, nextTurnIndex, nextClock, memoryGraph, npcsAfterEncoding, hiddenAfterDrift, observable, {
     kind: 'detail',
     narrative: summary.narrative,
     plausibilityJudgments: updatedJudgments,

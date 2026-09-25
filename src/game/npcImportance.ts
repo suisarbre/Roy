@@ -189,14 +189,22 @@ export function createNpcsFromRouterOutput(
   return created;
 }
 
+/** 사건의 무게(PlausibilityJudgment가 neutral이 아님)가 각인 확률에 주는 보정치. */
+const SIGNIFICANCE_ENCODING_BOOST = 0.3;
+const MAX_ENCODING_PROBABILITY = 0.98;
+
 /**
  * 이번 사건이 이 NPC 자신의 독립 그래프에도 각인될지를 확률로 정한다. minor는 항상 false.
  * "안 맞아떨어짐"이 아니라 "애초에 다 기억하진 않는다"는 선택적 각인을 표현한다 —
- * 중요도가 높을수록 각인 확률도 높다. 사건의 무게(개연성 판단 등)는 지금은 반영하지 않는다
- * (단순하게 가기로 함 — 나중에 필요하면 확률식에 보정치로 추가 가능).
+ * 중요도가 높을수록 각인 확률도 높다. `wasSignificantEvent`(개연성 판단이 neutral이
+ * 아니었거나 이 NPC를 겨냥한 statImpact가 있었음)가 참이면 확률을 추가로 끌어올린다 —
+ * 배우자가 목격한 큰 사건이 순전히 평소 중요도만으로 묻히는 걸 막기 위함.
  */
-export function shouldEncodeIntoNpcMemory(npc: Npc): boolean {
+export function shouldEncodeIntoNpcMemory(npc: Npc, wasSignificantEvent = false): boolean {
   if (npc.importanceTier !== 'major') return false;
-  const probability = Math.min(Math.max(npc.importanceScore / MAX_IMPORTANCE, 0.1), 0.95);
+  const baseProbability = Math.min(Math.max(npc.importanceScore / MAX_IMPORTANCE, 0.1), 0.95);
+  const probability = wasSignificantEvent
+    ? Math.min(baseProbability + SIGNIFICANCE_ENCODING_BOOST, MAX_ENCODING_PROBABILITY)
+    : baseProbability;
   return Math.random() < probability;
 }

@@ -66,6 +66,12 @@ export interface RouterOutput {
    * 않으므로, detail 턴이 아니어도 사망이 가능해야 한다는 원칙을 여기서 구조적으로 보장한다.
    */
   suddenDeath?: { cause: string } | null;
+  /**
+   * 이번 턴이 요청에 실려온 relevantEraEvents 후보 중 하나를 겪는 순간이라고 판단했을 때만
+   * 그 정의 id를 채운다. turnType이 'detail'이 아니면(제대로 서술되지 않으면) 무시된다 —
+   * 시대 이벤트는 항상 디테일하게 다뤄져야 한다는 문서 원칙 때문.
+   */
+  eraEventTriggered?: string;
   /** 이번 턴 처음 등장한 인물들. 이미 아는 사람은 여기 넣지 않는다. */
   newNpcs: ProposedNpc[];
   memoryGraphDelta: {

@@ -1,4 +1,5 @@
 import type {
+  EraEventDefinition,
   GameClock,
   ObservableStats,
   ParsedIntent,
@@ -25,6 +26,11 @@ export interface RouterTurnRequest {
   recentLog: RecentLogSummary[];
   /** target 파싱 시 참고할 기존 NPC 이름 목록 */
   knownNpcNames: string[];
+  /**
+   * 지금 시점 근방에 해당 가능한 시대 이벤트 후보 (eraEvents.ts의 getRelevantEraEvents로
+   * 값싸게 미리 추려진 것). 실제로 겪는지, 정확히 언제인지는 라우터가 최종 판단한다.
+   */
+  relevantEraEvents: EraEventDefinition[];
 }
 
 /**

@@ -1,4 +1,5 @@
 import { advanceClock } from './clock';
+import { getRelevantEraEvents } from './eraEvents';
 import type { MainModelClient, RecentLogSummary, RouterModelClient } from './llm/types';
 import { AMBIENT_RECALL_THRESHOLD, EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
 import {
@@ -18,6 +19,7 @@ import {
 import { applyHiddenStatDrift, applyRelationshipDrift, ensureRelationshipRecords } from './statDrift';
 import { createEmptyMemoryGraph } from './types';
 import type {
+  EraEventOccurrence,
   GameClock,
   GameState,
   HiddenStats,
@@ -135,6 +137,7 @@ interface FinalizeParams {
   death?: { cause: string } | null;
   /** 매크로 턴에서만 채워짐 — 씬 종료 커밋에는 없음 */
   routerOutput?: RouterOutput;
+  eraEventOccurrence?: EraEventOccurrence;
 }
 
 /** 클록 진행 + 로그 엔트리 생성 + 다음 GameState 조립. activeScene은 커밋 시점에 항상 비운다. */
@@ -176,6 +179,9 @@ function finalizeTurn(
     log: [...state.log, logEntry],
     deathInfo: deathInfo ?? state.deathInfo,
     activeScene: undefined,
+    eraEventOccurrences: params.eraEventOccurrence
+      ? [...state.eraEventOccurrences, params.eraEventOccurrence]
+      : state.eraEventOccurrences,
   };
 
   return { state: nextState, logEntry };
@@ -206,12 +212,10 @@ function applyStatDrift(
 }
 
 /**
- * 한 매크로 턴을 처리한다: 라우터 호출 → 그래프/NPC 갱신 → hidden 스탯 드리프트 →
- * (detail이면) 메인 모델 호출 → 상태/로그 갱신. 메인 모델이 씬 진입을 신호하면 activeScene을
- * 세팅하고 반환한다 — 다음 입력부터는 이 함수가 아니라 runSceneExchange로 처리해야 한다.
- *
- * 아직 구현하지 않은 것 (설계 미확정이라 의도적으로 비워둠):
- * - 시대 강제 이벤트 체크 (이벤트 풀 내용 자체가 문서상 미정)
+ * 한 매크로 턴을 처리한다: 라우터 호출(시대 이벤트 후보 포함) → 그래프/NPC 갱신 →
+ * hidden 스탯 드리프트 → (detail이면) 메인 모델 호출 → 상태/로그 갱신. 메인 모델이 씬
+ * 진입을 신호하면 activeScene을 세팅하고 반환한다 — 다음 입력부터는 이 함수가 아니라
+ * runSceneExchange로 처리해야 한다.
  */
 export async function runTurn(state: GameState, playerInput: string | null, deps: GameLoopDeps): Promise<TurnResult> {
   if (state.status === 'dead') {
@@ -224,12 +228,15 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   const nextTurnIndex = state.clock.turnIndex + 1;
   const recentLog = buildRecentLog(state.log);
   const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
+  const occurredEraEventIds = new Set(state.eraEventOccurrences.map((o) => o.definitionId));
+  const relevantEraEvents = getRelevantEraEvents(state.clock.date, state.clock.ageYears, occurredEraEventIds);
 
   const routerOutput = await deps.routerModel.runRouterTurn({
     clock: state.clock,
     playerInput,
     recentLog,
     knownNpcNames,
+    relevantEraEvents,
   });
 
   const { memoryGraph, npcs, newNodeIds, participantNpcIds } = applyDeltaAndNpcs(
@@ -274,6 +281,15 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     death = routerOutput.suddenDeath;
   }
 
+  // 시대 이벤트는 항상 detail로 제대로 서술돼야 기록한다. 라우터가 skip 턴에 잘못 끼워
+  // 넣었거나(모순), 이번 턴에 제시하지도 않은 id를 지어냈으면(환각) 무시한다.
+  const eraEventOccurrence: EraEventOccurrence | undefined =
+    routerOutput.turnType === 'detail' &&
+    routerOutput.eraEventTriggered &&
+    relevantEraEvents.some((definition) => definition.id === routerOutput.eraEventTriggered)
+      ? { definitionId: routerOutput.eraEventTriggered, occurredAt: nextClock.date, turnIndex: nextTurnIndex }
+      : undefined;
+
   const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, observable, {
     kind: routerOutput.turnType,
     playerInput: playerInput ?? undefined,
@@ -281,6 +297,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     plausibilityJudgment,
     death,
     routerOutput,
+    eraEventOccurrence,
   });
 
   if (entersScene && result.state.status === 'alive') {

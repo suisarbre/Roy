@@ -13,6 +13,13 @@ interface GameStore {
    * 체이닝이 없으므로 빈 배열.
    */
   lastChainedTurns: TurnResult[];
+  /**
+   * 메인 모델이 스트리밍으로 narrative/reply를 채우는 동안의 실시간 텍스트. 턴이 확정되면
+   * (로그에 커밋되면) null로 돌아간다 — 그 순간부터는 state.log/activeScene.exchanges가
+   * 진짜 소스이므로 중복 표시를 막기 위함.
+   */
+  streamingNarrative: string | null;
+  setStreamingNarrative: (text: string | null) => void;
   submitTurn: (playerInput: string | null, deps: GameLoopDeps) => Promise<void>;
   resetGame: () => void;
 }
@@ -21,10 +28,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   state: createInitialGameState(),
   isProcessingTurn: false,
   lastChainedTurns: [],
+  streamingNarrative: null,
+  setStreamingNarrative: (text) => set({ streamingNarrative: text }),
 
   submitTurn: async (playerInput, deps) => {
     if (get().isProcessingTurn) return;
-    set({ isProcessingTurn: true });
+    set({ isProcessingTurn: true, streamingNarrative: null });
     try {
       const { state } = get();
 
@@ -40,9 +49,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const { state: nextState, turns } = await advanceUntilInputNeeded(state, deps, playerInput);
       set({ state: nextState, lastChainedTurns: turns });
     } finally {
-      set({ isProcessingTurn: false });
+      set({ isProcessingTurn: false, streamingNarrative: null });
     }
   },
 
-  resetGame: () => set({ state: createInitialGameState(), isProcessingTurn: false, lastChainedTurns: [] }),
+  resetGame: () =>
+    set({ state: createInitialGameState(), isProcessingTurn: false, lastChainedTurns: [], streamingNarrative: null }),
 }));

@@ -6,7 +6,9 @@ import { CreateMLCEngine, type InitProgressReport, type MLCEngine } from '@mlc-a
  * chatCompletion 호출마다 `model` 필드로 어느 쪽을 쓸지만 고른다.
  */
 export const ROUTER_MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
-export const MAIN_MODEL_ID = 'Qwen2.5-7B-Instruct-q4f16_1-MLC';
+// 7B는 체감 지연이 너무 커서 3B로 내림 — 다국어/CJK 강점은 Qwen 계열이라 유지되고,
+// 서사 길이가 짧은 이 게임 특성상 품질 손실보다 응답 속도 이득이 크다는 판단(사용자 결정).
+export const MAIN_MODEL_ID = 'Qwen2.5-3B-Instruct-q4f16_1-MLC';
 
 export type EngineLoadProgress = InitProgressReport;
 

@@ -18,7 +18,7 @@ interface EngineState {
 const INITIAL_ENGINE_STATE: EngineState = { status: 'loading', engine: null, progress: null, error: null };
 
 function App() {
-  const { state, isProcessingTurn, submitTurn, resetGame } = useGameStore();
+  const { state, isProcessingTurn, submitTurn, resetGame, streamingNarrative, setStreamingNarrative } = useGameStore();
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const [input, setInput] = useState('');
@@ -58,10 +58,10 @@ function App() {
     const engine = engineState.engine;
     return {
       routerModel: createWebLLMRouterModel(engine, language),
-      mainModel: createWebLLMMainModel(engine, language),
+      mainModel: createWebLLMMainModel(engine, language, setStreamingNarrative),
       language,
     };
-  }, [language, engineState.engine]);
+  }, [language, engineState.engine, setStreamingNarrative]);
 
   const strings = UI_STRINGS[language];
   const exchangeCount = state.activeScene?.exchanges.length ?? 0;
@@ -162,7 +162,11 @@ function App() {
         {state.activeScene?.exchanges.map((exchange) => (
           <LogEntryView key={`scene-${exchange.index}`} narrative={exchange.reply} playerInput={exchange.playerInput} />
         ))}
-        {isProcessingTurn && <div className="pending">…</div>}
+        {isProcessingTurn && (
+          <div className="entry pending">
+            <div className="narrative streaming">{streamingNarrative || '…'}</div>
+          </div>
+        )}
         <div ref={logEndRef} />
       </div>
 

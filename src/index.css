@@ -91,8 +91,20 @@ body {
   color: var(--fg);
 }
 
-.pending {
+.pending .narrative {
   color: var(--dim);
+}
+
+.streaming::after {
+  content: '▌';
+  margin-left: 2px;
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .death {

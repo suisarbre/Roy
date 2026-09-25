@@ -59,8 +59,15 @@ function languageInstruction(language: Language): string {
   return `Respond in ${LANGUAGE_NAMES[language]}. Every free-text field (narrative, reply, trivialReply, content, label, cause, etc.) must be written in ${LANGUAGE_NAMES[language]}. Field names and enum values themselves stay in English exactly as specified by the schema.`;
 }
 
+/** 스키마상 optional인 필드는 "해당 없음"일 때 아예 생략하라고 명시 — 그래야 매 호출마다
+ *  불필요한 null 필드들을 써내느라 응답이 느려지는 걸 막을 수 있다. */
+const OMIT_OPTIONAL_FIELDS_INSTRUCTION =
+  'Omit any field the schema marks as optional when it does not apply — do not include it with a null or empty placeholder value. Only include an optional field when it genuinely has something to say.';
+
+// 프롬프트에 박아넣는 JSON은 압축(들여쓰기 없음)으로 — pretty-print는 토큰만 늘리고
+// 모델 이해도엔 도움이 안 된다.
 function jsonBlock(value: unknown): string {
-  return '```json\n' + JSON.stringify(value, null, 2) + '\n```';
+  return '```json\n' + JSON.stringify(value) + '\n```';
 }
 
 export interface PromptPair {
@@ -87,13 +94,14 @@ Decide:
   it's a single scene).
 - intent: only when turnType is 'detail' and playerInput is not null — parse the player's stated action.
 - eraEventTriggered: only set this to one of relevantEraEvents[].id if this turn is precisely the moment
-  Roy experiences that event, and only on a 'detail' turn. Otherwise null.
+  Roy experiences that event, and only on a 'detail' turn. Otherwise omit it entirely.
 - newNpcs / memoryGraphDelta: extract any new people, events, places worth remembering from this turn.
   Only propose newNpcs for names NOT already in knownNpcNames. localId values are your own temporary
   references within this single response (not real IDs) — newEdges/participantNpcIds may point to them.
+  If nothing is worth remembering, omit memoryGraphDelta (or its empty parts) entirely.
 
 ${languageInstruction(language)} (note: this call produces almost no free text — only cause/content/label
-fields if used at all).`;
+fields if used at all). ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Current state:
 ${jsonBlock({ clock: request.clock, playerInput: request.playerInput, knownNpcNames: request.knownNpcNames })}
@@ -127,7 +135,7 @@ Decide:
 - sceneEnded: true if this exchange is a natural closing point for the scene (goodbye, topic
   exhausted, someone leaves).
 
-${languageInstruction(language)}`;
+${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Scene so far (oldest to newest):
 ${jsonBlock(request.exchangesSoFar)}
@@ -151,9 +159,9 @@ just ended. Compress the whole exchange log into:
   this scene amounted to, not a transcript.
 - elapsedMonths: how much game time this scene itself consumed (usually 0 — it's a single sitting).
 - newNpcs / memoryGraphDelta: anything from this scene worth remembering long-term (only genuinely
-  memorable content — not every line of small talk).
+  memorable content — not every line of small talk). Omit these entirely if nothing qualifies.
 
-${languageInstruction(language)}`;
+${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Full scene exchange log:
 ${jsonBlock(request.exchanges)}
@@ -177,18 +185,19 @@ Decide:
 - plausibilityJudgment: verdict ('reckless' | 'prepared' | 'neutral' — 'neutral' when nothing risky was
   attempted), citing specific recalledMemories ids that justify it, and successBias for how favorably
   this should resolve.
-- statImpact: the concrete numeric consequence of this scene, if any (all fields nullable — leave null
-  for anything unaffected). Deltas should be small and proportionate to a single scene, not
-  life-changing swings, unless the scene truly is life-changing (e.g. losing a job, a major windfall).
-- death: only if Roy's life plausibly ends in this exact scene. Otherwise null.
+- statImpact: the concrete numeric consequence of this scene, if any (every field is optional — omit
+  whatever isn't affected; an empty statImpact is normal and expected for most scenes). Deltas should be
+  small and proportionate to a single scene, not life-changing swings, unless the scene truly is
+  life-changing (e.g. losing a job, a major windfall).
+- death: only if Roy's life plausibly ends in this exact scene. Otherwise omit it.
 - entersScene: set this if the natural next step is a back-and-forth conversation/interaction that
-  should be played out exchange-by-exchange (list the NPC ids present). Otherwise null.
+  should be played out exchange-by-exchange (list the NPC ids present). Otherwise omit it.
 
 You only see recalledMemories (a filtered subset of Roy's memory graph, by activation strength) — not his
 whole life. Treat anything not listed there as something you don't currently recall, even if it might
 exist elsewhere in his history.
 
-${languageInstruction(language)}`;
+${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Roy's clock: ${jsonBlock(request.clock)}
 
@@ -223,7 +232,7 @@ Decide:
   attempt Roy just made in his line, citing recalledMemories, and reflect real numeric consequences.
 - sceneEnded: true if this reply naturally closes the scene.
 
-${languageInstruction(language)}`;
+${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
   const user = `Scene so far (oldest to newest):
 ${jsonBlock(request.exchangesSoFar)}

@@ -42,6 +42,7 @@ export interface TurnResult {
 
 const RECENT_LOG_TAIL_SIZE = 5;
 const MAX_SCENE_EXCHANGES = 12;
+const MAX_CHAINED_SKIPS = 20;
 
 function buildRecentLog(log: TurnLogEntry[]): RecentLogSummary[] {
   return log.slice(-RECENT_LOG_TAIL_SIZE).map((entry) => ({
@@ -371,4 +372,48 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   });
 
   return { state: concluded.state, exchange, concluded };
+}
+
+export interface AutoAdvanceResult {
+  state: GameState;
+  /** 이번 호출에서 체이닝된 모든 턴 결과 — 대개 skip 여러 개 뒤에 detail 하나(또는 없음). */
+  turns: TurnResult[];
+}
+
+/**
+ * 플레이어 입력 하나를 처리한 뒤, "의미있는 선택이 필요한 시점"까지 스킵 턴을 자동으로
+ * 이어붙인다. `initialPlayerInput`은 첫 번째 호출에만 쓰이고(플레이어의 실제 행동), 이후
+ * 반복은 전부 playerInput=null로 진행된다. 즉 플레이어 행동 자체가 스킵으로 판정되면
+ * (예: "그냥 하루를 보낸다") 그 즉시 다음 detail 턴까지 자동으로 흘러간다.
+ *
+ * detail 턴(플레이어 행동이 detail로 판정됐든, 자동 진행 중 환경이 강제로 만든 것이든)에
+ * 도달하거나, 사망하거나, 씬에 진입하면 멈춘다 — 전부 "이제 플레이어 입력이 필요한 시점"이다.
+ * 라우터가 계속 skip만 반환해도 MAX_CHAINED_SKIPS에서 강제로 멈춰서 제어권을 돌려준다
+ * (서사를 억지로 만들어내지 않고, 그냥 거기까지 보여주고 플레이어가 계속할지 정하게 한다).
+ */
+export async function advanceUntilInputNeeded(
+  state: GameState,
+  deps: GameLoopDeps,
+  initialPlayerInput: string | null = null,
+): Promise<AutoAdvanceResult> {
+  const turns: TurnResult[] = [];
+  let current = state;
+  let playerInput = initialPlayerInput;
+  let chainedSkips = 0;
+
+  while (current.status !== 'dead' && !current.activeScene) {
+    const result = await runTurn(current, playerInput, deps);
+    playerInput = null;
+    turns.push(result);
+    current = result.state;
+
+    if (current.status === 'dead' || current.activeScene || result.logEntry.kind === 'detail') {
+      break;
+    }
+
+    chainedSkips++;
+    if (chainedSkips >= MAX_CHAINED_SKIPS) break;
+  }
+
+  return { state: current, turns };
 }

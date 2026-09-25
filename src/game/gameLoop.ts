@@ -7,9 +7,15 @@ import {
   getParticipantNpcIdsInDelta,
   getRecalledMemoryNodeIds,
 } from './memoryGraphOps';
-import { registerNpcAppearance, shouldEncodeIntoNpcMemory } from './npcImportance';
+import {
+  applyImportanceDecay,
+  createNpcsFromRouterOutput,
+  registerNpcAppearance,
+  resolveNewNpcReferences,
+  shouldEncodeIntoNpcMemory,
+} from './npcImportance';
 import { createEmptyMemoryGraph } from './types';
-import type { GameState, TurnLogEntry } from './types';
+import type { GameState, Npc, NpcId, TurnLogEntry } from './types';
 
 export interface GameLoopDeps {
   routerModel: RouterModelClient;
@@ -62,36 +68,49 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     knownNpcNames,
   });
 
-  const { graph: memoryGraph, newNodeIds } = applyMemoryGraphDelta(
-    state.memoryGraph,
-    routerOutput.memoryGraphDelta,
-    nextTurnIndex,
-  );
+  // 신규 NPC는 이 시점엔 아직 실제 NpcId가 없다 — 먼저 발급하고, 델타 안의 참조(localId)를
+  // 실제 id로 치환한 다음에 그래프에 반영한다. applyMemoryGraphDelta는 NPC 생성을 몰라도 된다.
+  const npcLocalIdToRealId = new Map(routerOutput.newNpcs.map((proposed) => [proposed.localId, crypto.randomUUID()]));
+  const resolvedDelta = resolveNewNpcReferences(routerOutput.memoryGraphDelta, npcLocalIdToRealId);
+
+  const {
+    graph: memoryGraph,
+    newNodeIds,
+    localIdToRealId: memoryNodeLocalIdToRealId,
+  } = applyMemoryGraphDelta(state.memoryGraph, resolvedDelta, nextTurnIndex);
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
-  // 이번 턴에 등장한(참여자로 태그된) NPC들의 중요도를 갱신하고, major NPC는 확률적으로
-  // 자기만의 독립 그래프에도 이번 사건을 각인시킨다. 아직 state.npcs에 없는 인물(라우터가
-  // 방금 처음 언급한 신규 인물)은 건너뛴다 — NPC 레코드 생성 파이프라인은 별도 과제.
-  const participantNpcIds = getParticipantNpcIdsInDelta(routerOutput.memoryGraphDelta, memoryGraph);
-  let npcs = state.npcs;
-  if (participantNpcIds.length > 0) {
-    npcs = { ...npcs };
-    for (const npcId of participantNpcIds) {
-      const npc = npcs[npcId];
-      if (!npc) continue;
+  const newNpcs = createNpcsFromRouterOutput(
+    state.npcs,
+    routerOutput.newNpcs,
+    npcLocalIdToRealId,
+    memoryNodeLocalIdToRealId,
+    nextTurnIndex,
+  );
 
-      let updatedNpc = registerNpcAppearance(npc, memoryGraph);
-      if (shouldEncodeIntoNpcMemory(updatedNpc)) {
-        const npcDelta = filterDeltaForParticipant(routerOutput.memoryGraphDelta, npcId);
-        const { graph: npcMemoryGraph } = applyMemoryGraphDelta(
-          updatedNpc.memoryGraph ?? createEmptyMemoryGraph(),
-          npcDelta,
-          nextTurnIndex,
-        );
-        updatedNpc = { ...updatedNpc, memoryGraph: npcMemoryGraph };
-      }
-      npcs[npcId] = updatedNpc;
+  // 모든 NPC(기존 + 신규)를 한 번씩 갱신한다: 이번 턴 참여자는 중요도가 오르고(+확률적으로
+  // 자기 그래프에 각인), 참여하지 않은 가족 아닌 NPC는 elapsedMonths만큼 중요도가 깎여
+  // 임계값 아래로 내려가면 강등된다. 스케일이 작아서(수십 명 x 수백 턴) 매턴 전수 순회해도
+  // 비용 문제 없다.
+  const participantNpcIds = new Set(getParticipantNpcIdsInDelta(resolvedDelta, memoryGraph));
+  const npcs: Record<NpcId, Npc> = {};
+  for (const [npcId, npc] of Object.entries({ ...state.npcs, ...newNpcs })) {
+    if (!participantNpcIds.has(npcId)) {
+      npcs[npcId] = applyImportanceDecay(npc, routerOutput.elapsedMonths);
+      continue;
     }
+
+    let updatedNpc = registerNpcAppearance(npc, memoryGraph);
+    if (shouldEncodeIntoNpcMemory(updatedNpc)) {
+      const npcDelta = filterDeltaForParticipant(resolvedDelta, npcId);
+      const { graph: npcMemoryGraph } = applyMemoryGraphDelta(
+        updatedNpc.memoryGraph ?? createEmptyMemoryGraph(),
+        npcDelta,
+        nextTurnIndex,
+      );
+      updatedNpc = { ...updatedNpc, memoryGraph: npcMemoryGraph };
+    }
+    npcs[npcId] = updatedNpc;
   }
 
   let narrative: string;
@@ -102,7 +121,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   if (routerOutput.turnType === 'detail' && routerOutput.intent) {
     const isDeliberateRecall = routerOutput.intent.actionType === 'recall';
     const recallThreshold = isDeliberateRecall ? EFFORTFUL_RECALL_THRESHOLD : AMBIENT_RECALL_THRESHOLD;
-    const seedNodeIds = [...newNodeIds, ...routerOutput.memoryGraphDelta.accessedNodeIds];
+    const seedNodeIds = [...newNodeIds, ...resolvedDelta.accessedNodeIds];
     const recalledMemoryNodeIds = getRecalledMemoryNodeIds(memoryGraph, nextTurnIndex, seedNodeIds, recallThreshold);
     const recalledMemories = recalledMemoryNodeIds
       .map((id) => memoryGraph.nodes[id])

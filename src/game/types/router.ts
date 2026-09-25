@@ -1,4 +1,5 @@
 import type { MemoryEdge, MemoryNode } from './memory';
+import type { NpcRelationType } from './npc';
 
 export type TurnKind = 'skip' | 'detail';
 
@@ -40,6 +41,20 @@ export interface ProposedMemoryEdge extends Pick<MemoryEdge, 'relation' | 'weigh
   to: string;
 }
 
+/**
+ * 라우터가 처음 소개하는 인물. `knownNpcNames`에 없는 이름이 등장할 때만 제안해야 한다
+ * (이미 아는 사람이면 대신 그 사람의 실제 NpcId를 participantNpcIds에 바로 써야 함).
+ */
+export interface ProposedNpc {
+  /** 이 NPC 자신을 가리키는 임시 id — 실제 NpcId가 아직 없으므로, 같은 델타의 다른 노드가
+   *  participantNpcIds로 이 NPC를 태그할 때 이 localId를 대신 쓴다. */
+  localId: string;
+  name: string;
+  relationType: NpcRelationType;
+  /** 이 NPC를 설명하는 newNodes[] 중 하나의 localId (보통 type: 'person') */
+  personNodeLocalId: string;
+}
+
 /** 소형 라우터 모델이 매 턴 산출하는 구조화 출력 */
 export interface RouterOutput {
   turnType: TurnKind;
@@ -51,6 +66,8 @@ export interface RouterOutput {
    * 않으므로, detail 턴이 아니어도 사망이 가능해야 한다는 원칙을 여기서 구조적으로 보장한다.
    */
   suddenDeath?: { cause: string } | null;
+  /** 이번 턴 처음 등장한 인물들. 이미 아는 사람은 여기 넣지 않는다. */
+  newNpcs: ProposedNpc[];
   memoryGraphDelta: {
     newNodes: ProposedMemoryNode[];
     newEdges: ProposedMemoryEdge[];

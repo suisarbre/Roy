@@ -1,10 +1,18 @@
 import { createEmptyMemoryGraph } from './types';
-import type { MemoryGraph, Npc, NpcId, NpcRelationType } from './types';
+import type { MemoryGraph, Npc, NpcId, NpcRelationType, ProposedNpc, RouterOutput } from './types';
 
-/** 이 점수를 넘으면 minor -> major로 승격 (강등은 없음). */
+/** 승격 임계값이자, 강등이 허용되는 관계에서 다시 minor로 떨어지는 기준선이기도 하다. */
 export const IMPORTANCE_PROMOTION_THRESHOLD = 50;
 const IMPORTANCE_GAIN_PER_APPEARANCE = 3;
+const IMPORTANCE_DECAY_PER_MONTH = 0.5;
 const MAX_IMPORTANCE = 100;
+
+/** 가족 관계는 강등 대상이 아니다 — 한 번 중요해진 가족이 안 만난다고 하찮아지진 않는다는 단순화. */
+const FAMILY_RELATION_TYPES: readonly NpcRelationType[] = ['parent', 'spouse', 'child', 'sibling'];
+
+export function isFamilyRelation(relationType: NpcRelationType): boolean {
+  return FAMILY_RELATION_TYPES.includes(relationType);
+}
 
 /** 관계 타입에 따른 초기 중요도 — 하이브리드의 "고정" 절반. */
 const BASE_IMPORTANCE_BY_RELATION: Record<NpcRelationType, number> = {
@@ -80,6 +88,69 @@ function bootstrapMemoryGraphFromShared(sharedGraph: MemoryGraph, npcId: NpcId):
   }
 
   return { nodes, edges, adjacency };
+}
+
+/**
+ * 이번 턴에 등장하지 않은 NPC에게 호출 — 가족이 아니면 시간이 지날수록(elapsedMonths만큼)
+ * 중요도가 깎이고, 임계값 아래로 떨어지면 major -> minor로 강등된다.
+ * 강등돼도 그동안 쌓인 memoryGraph는 지우지 않는다: 관계가 뜸해졌다고 과거 기억이 통째로
+ * 사라지는 게 아니라, 그 그래프 자체도 자기 활성화 곡선을 따라 서서히 흐려질 뿐이다.
+ */
+export function applyImportanceDecay(npc: Npc, elapsedMonths: number): Npc {
+  if (isFamilyRelation(npc.relationType)) return npc;
+  if (npc.importanceTier !== 'major') return npc;
+  if (elapsedMonths <= 0) return npc;
+
+  const importanceScore = Math.max(npc.importanceScore - IMPORTANCE_DECAY_PER_MONTH * elapsedMonths, 0);
+  const importanceTier = importanceScore >= IMPORTANCE_PROMOTION_THRESHOLD ? 'major' : 'minor';
+  return { ...npc, importanceScore, importanceTier };
+}
+
+/**
+ * 델타의 participantNpcIds 안에 섞여 있는 "아직 실제 id가 없는 신규 NPC" 참조를
+ * 실제 NpcId로 치환한다. applyMemoryGraphDelta는 NPC 생성 개념을 몰라도 되도록,
+ * 이 해소는 그래프 적용 전에 미리 끝내둔다.
+ */
+export function resolveNewNpcReferences(
+  delta: RouterOutput['memoryGraphDelta'],
+  npcLocalIdToRealId: Map<string, string>,
+): RouterOutput['memoryGraphDelta'] {
+  return {
+    ...delta,
+    newNodes: delta.newNodes.map((node) => ({
+      ...node,
+      participantNpcIds: node.participantNpcIds?.map((id) => npcLocalIdToRealId.get(id) ?? id),
+    })),
+  };
+}
+
+/**
+ * 라우터가 이번 턴 처음 소개한 인물들의 Npc 레코드를 만든다.
+ * `knownNpcNames`로 이미 안내했음에도 라우터가 같은 이름을 다시 신규로 제안하면
+ * (환각/실수) 무시한다 — 중복 NPC 생성 방지.
+ */
+export function createNpcsFromRouterOutput(
+  existingNpcs: Record<NpcId, Npc>,
+  proposedNpcs: ProposedNpc[],
+  npcLocalIdToRealId: Map<string, string>,
+  memoryNodeLocalIdToRealId: Map<string, string>,
+  currentTurn: number,
+): Record<NpcId, Npc> {
+  const created: Record<NpcId, Npc> = {};
+  const existingNames = new Set(Object.values(existingNpcs).map((npc) => npc.name));
+
+  for (const proposed of proposedNpcs) {
+    if (existingNames.has(proposed.name)) continue;
+
+    const id = npcLocalIdToRealId.get(proposed.localId);
+    const memoryNodeId = memoryNodeLocalIdToRealId.get(proposed.personNodeLocalId);
+    if (!id || !memoryNodeId) continue; // 대응하는 노드가 없으면 무시 (환각 방어)
+
+    created[id] = createNpc({ id, name: proposed.name, relationType: proposed.relationType, firstAppearedTurn: currentTurn, memoryNodeId });
+    existingNames.add(proposed.name);
+  }
+
+  return created;
 }
 
 /**

@@ -5,6 +5,8 @@ export interface ApplyDeltaResult {
   graph: MemoryGraph;
   /** 이번 델타로 새로 생성된 노드의 실제 id (회상 시드로 쓰인다) */
   newNodeIds: string[];
+  /** newNodes[].localId -> 실제 id. 신규 NPC의 personNodeLocalId를 해소하는 데도 쓰인다. */
+  localIdToRealId: Map<string, string>;
 }
 
 /**
@@ -60,7 +62,7 @@ export function applyMemoryGraphDelta(
     nodes[nodeId] = { ...node, accessTurns: [...node.accessTurns, currentTurn] };
   }
 
-  return { graph: { nodes, edges, adjacency }, newNodeIds };
+  return { graph: { nodes, edges, adjacency }, newNodeIds, localIdToRealId };
 }
 
 function getGlobalTopActivation(

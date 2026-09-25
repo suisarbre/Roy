@@ -9,8 +9,18 @@ export type TurnKind = 'skip' | 'detail';
  * contextTags(예: 'crime', 'startup', 'immigration', 'gambling')로 한다.
  * 시대 강제 이벤트(징병 등)는 플레이어 의도가 아니므로 여기 포함하지 않는다 —
  * eraEvent.ts의 별도 트리거 파이프라인에서 처리한다.
+ * 'recall'은 "그때 그 사람 이름이 뭐였지 생각해본다"처럼 의도적으로 기억을 더듬는
+ * 행동 — 일반 회상(AMBIENT_RECALL_THRESHOLD)보다 낮은 임계값(EFFORTFUL_RECALL_THRESHOLD)으로
+ * 그래프를 다시 탐색해서, 평소엔 흐려서 안 떠오르던 기억도 노력을 들이면 접근 가능하게 한다.
  */
-export type ActionCategory = 'routine' | 'career' | 'relationship' | 'health' | 'finance' | 'majorLifeAttempt';
+export type ActionCategory =
+  | 'routine'
+  | 'career'
+  | 'relationship'
+  | 'health'
+  | 'finance'
+  | 'majorLifeAttempt'
+  | 'recall';
 
 export interface ParsedIntent {
   actionType: ActionCategory;
@@ -36,6 +46,11 @@ export interface RouterOutput {
   intent: ParsedIntent | null; // skip 턴에는 null일 수 있음
   /** 이번 턴이 게임 시간상 몇 개월에 해당하는지. detail 턴은 보통 0(그 자리에서 벌어지는 사건). */
   elapsedMonths: number;
+  /**
+   * skip 턴 중 예고 없이 발생한 사망 (심장마비, 사고 등). 삶은 "중요한 순간"에만 끝나지
+   * 않으므로, detail 턴이 아니어도 사망이 가능해야 한다는 원칙을 여기서 구조적으로 보장한다.
+   */
+  suddenDeath?: { cause: string } | null;
   memoryGraphDelta: {
     newNodes: ProposedMemoryNode[];
     newEdges: ProposedMemoryEdge[];

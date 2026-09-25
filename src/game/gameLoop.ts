@@ -1,6 +1,7 @@
 import { advanceClock } from './clock';
-import type { MainModelClient, RouterModelClient } from './llm/types';
-import { applyMemoryGraphDelta, getAmbientlyRecalledNodeIds } from './memoryGraphOps';
+import type { MainModelClient, RecentLogSummary, RouterModelClient } from './llm/types';
+import { AMBIENT_RECALL_THRESHOLD, EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
+import { applyMemoryGraphDelta, getRecalledMemoryNodeIds } from './memoryGraphOps';
 import type { GameState, TurnLogEntry } from './types';
 
 export interface GameLoopDeps {
@@ -11,6 +12,16 @@ export interface GameLoopDeps {
 export interface TurnResult {
   state: GameState;
   logEntry: TurnLogEntry;
+}
+
+const RECENT_LOG_TAIL_SIZE = 5;
+
+function buildRecentLog(log: TurnLogEntry[]): RecentLogSummary[] {
+  return log.slice(-RECENT_LOG_TAIL_SIZE).map((entry) => ({
+    kind: entry.kind,
+    narrative: entry.narrative,
+    playerInput: entry.playerInput,
+  }));
 }
 
 function buildSkipNarrative(elapsedMonths: number): string {
@@ -34,10 +45,21 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   }
 
   const nextTurnIndex = state.clock.turnIndex + 1;
+  const recentLog = buildRecentLog(state.log);
+  const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
 
-  const routerOutput = await deps.routerModel.runRouterTurn({ state, playerInput });
+  const routerOutput = await deps.routerModel.runRouterTurn({
+    clock: state.clock,
+    playerInput,
+    recentLog,
+    knownNpcNames,
+  });
 
-  const memoryGraph = applyMemoryGraphDelta(state.memoryGraph, routerOutput.memoryGraphDelta, nextTurnIndex);
+  const { graph: memoryGraph, newNodeIds } = applyMemoryGraphDelta(
+    state.memoryGraph,
+    routerOutput.memoryGraphDelta,
+    nextTurnIndex,
+  );
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
   let narrative: string;
@@ -46,12 +68,21 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   let deathInfo: GameState['deathInfo'];
 
   if (routerOutput.turnType === 'detail' && routerOutput.intent) {
-    const recalledMemoryNodeIds = getAmbientlyRecalledNodeIds(memoryGraph, nextTurnIndex);
+    const isDeliberateRecall = routerOutput.intent.actionType === 'recall';
+    const recallThreshold = isDeliberateRecall ? EFFORTFUL_RECALL_THRESHOLD : AMBIENT_RECALL_THRESHOLD;
+    const seedNodeIds = [...newNodeIds, ...routerOutput.memoryGraphDelta.accessedNodeIds];
+    const recalledMemoryNodeIds = getRecalledMemoryNodeIds(memoryGraph, nextTurnIndex, seedNodeIds, recallThreshold);
+    const recalledMemories = recalledMemoryNodeIds
+      .map((id) => memoryGraph.nodes[id])
+      .filter((node) => node !== undefined)
+      .map((node) => ({ id: node.id, type: node.type, content: node.content }));
 
     const response = await deps.mainModel.runDetailTurn({
-      state: { ...state, memoryGraph },
+      clock: nextClock,
+      observable: state.observable,
       intent: routerOutput.intent,
-      recalledMemoryNodeIds,
+      recentLog,
+      recalledMemories,
     });
 
     narrative = response.narrative;
@@ -63,6 +94,11 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     }
   } else {
     narrative = buildSkipNarrative(routerOutput.elapsedMonths);
+
+    if (routerOutput.suddenDeath) {
+      status = 'dead';
+      deathInfo = { cause: routerOutput.suddenDeath.cause, ageAtDeath: nextClock.ageYears };
+    }
   }
 
   const logEntry: TurnLogEntry = {

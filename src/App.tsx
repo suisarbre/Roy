@@ -1,15 +1,25 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { mockMainModel, mockRouterModel } from './game/llm/mockClients';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { createMockMainModel, createMockRouterModel } from './game/llm/mockClients';
 import { useGameStore } from './game/store';
 import type { GameLoopDeps } from './game/gameLoop';
-
-const deps: GameLoopDeps = { routerModel: mockRouterModel, mainModel: mockMainModel };
+import { formatStatus, getDeathText, LANGUAGES, UI_STRINGS } from './i18n';
+import { useSettingsStore } from './settingsStore';
 
 function App() {
   const { state, isProcessingTurn, submitTurn, resetGame } = useGameStore();
+  const language = useSettingsStore((s) => s.language);
+  const setLanguage = useSettingsStore((s) => s.setLanguage);
   const [input, setInput] = useState('');
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  // 목업 클라이언트는 언어 설정을 클로저로 받으므로, 언어가 바뀌면 다시 만들어야 한다.
+  // 실제 WebLLM으로 교체될 때도 이 자리(deps 구성)만 바뀌면 된다.
+  const deps: GameLoopDeps = useMemo(
+    () => ({ routerModel: createMockRouterModel(language), mainModel: createMockMainModel(language), language }),
+    [language],
+  );
+
+  const strings = UI_STRINGS[language];
   const exchangeCount = state.activeScene?.exchanges.length ?? 0;
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: 'end' });
@@ -28,20 +38,34 @@ function App() {
     void submitTurn(null, deps);
   };
 
+  const languageSwitcher = (
+    <div className="language-switcher">
+      {LANGUAGES.map(({ code, label }) => (
+        <button
+          key={code}
+          type="button"
+          className={code === language ? 'active' : ''}
+          onClick={() => setLanguage(code)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
   if (state.status === 'dead' && state.deathInfo) {
     return (
       <div className="terminal">
+        {languageSwitcher}
         <div className="log">
           {state.log.map((entry) => (
             <LogEntryView key={entry.turnIndex} narrative={entry.narrative} playerInput={entry.playerInput} />
           ))}
-          <div className="death">
-            {state.deathInfo.cause}(으)로 사망. 향년 {state.deathInfo.ageAtDeath}세.
-          </div>
+          <div className="death">{getDeathText(state.deathInfo.cause, state.deathInfo.ageAtDeath, language)}</div>
           <div ref={logEndRef} />
         </div>
         <button type="button" className="restart" onClick={resetGame}>
-          다시 시작
+          {strings.restartButton}
         </button>
       </div>
     );
@@ -49,9 +73,8 @@ function App() {
 
   return (
     <div className="terminal">
-      <div className="status">
-        {state.clock.date.year}.{String(state.clock.date.month).padStart(2, '0')} · {state.clock.ageYears}세
-      </div>
+      {languageSwitcher}
+      <div className="status">{formatStatus(state.clock.date.year, state.clock.date.month, state.clock.ageYears, language)}</div>
 
       <div className="log">
         {state.log.map((entry) => (
@@ -71,11 +94,11 @@ function App() {
           onChange={(e) => setInput(e.target.value)}
           disabled={isProcessingTurn}
           autoFocus
-          placeholder={state.activeScene ? '무슨 말을 할지' : '무엇을 할지'}
+          placeholder={state.activeScene ? strings.inputPlaceholderScene : strings.inputPlaceholderAction}
         />
         {!state.activeScene && (
           <button type="button" onClick={handleContinue} disabled={isProcessingTurn}>
-            계속하기
+            {strings.continueButton}
           </button>
         )}
       </form>

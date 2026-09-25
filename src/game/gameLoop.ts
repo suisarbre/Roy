@@ -1,5 +1,6 @@
 import { advanceClock } from './clock';
 import { getRelevantEraEvents } from './eraEvents';
+import { getSkipNarrative, type Language } from '../i18n';
 import type { MainModelClient, RecentLogSummary, RouterModelClient } from './llm/types';
 import { AMBIENT_RECALL_THRESHOLD, EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
 import {
@@ -40,6 +41,8 @@ import type {
 export interface GameLoopDeps {
   routerModel: RouterModelClient;
   mainModel: MainModelClient;
+  /** 스킵 서사 템플릿 등 게임 루프 자체가 직접 만들어내는 텍스트의 언어. */
+  language: Language;
 }
 
 export interface TurnResult {
@@ -57,14 +60,6 @@ function buildRecentLog(log: TurnLogEntry[]): RecentLogSummary[] {
     narrative: entry.narrative,
     playerInput: entry.playerInput,
   }));
-}
-
-function buildSkipNarrative(elapsedMonths: number): string {
-  // TODO: 지금은 템플릿 문구. 나중에 라우터가 맥락(예: contextTags)을 반영한 한 줄 요약을
-  // 직접 생성하도록 바꿀 수 있음 — 우선은 문서 예시("그렇게 3개월이 별일 없이 흘렀다")만 구현.
-  if (elapsedMonths <= 0) return '별다른 사건 없이 시간이 흘렀다.';
-  if (elapsedMonths === 1) return '그렇게 한 달이 별일 없이 흘렀다.';
-  return `그렇게 ${elapsedMonths}개월이 별일 없이 흘렀다.`;
 }
 
 interface DeltaApplicationResult {
@@ -284,7 +279,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     // 남고 hidden/observable엔 아무 흔적도 안 남는다.
     ({ hidden, observable, npcs } = applyStatImpact(hiddenAfterDrift, state.observable, npcsAfterDelta, response.statImpact));
   } else {
-    narrative = buildSkipNarrative(routerOutput.elapsedMonths);
+    narrative = getSkipNarrative(routerOutput.elapsedMonths, deps.language);
     death = routerOutput.suddenDeath;
   }
 

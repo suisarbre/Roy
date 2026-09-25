@@ -47,6 +47,29 @@ body {
   flex-shrink: 0;
 }
 
+.language-switcher {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.language-switcher button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.language-switcher button.active {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .log {
   flex: 1;
   overflow-y: auto;

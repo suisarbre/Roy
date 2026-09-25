@@ -7,3 +7,4 @@ export * from './log';
 export * from './eraEvent';
 export * from './scene';
 export * from './state';
+export * from './statImpact';

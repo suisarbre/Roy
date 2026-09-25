@@ -18,6 +18,7 @@ import {
   shouldEncodeIntoNpcMemory,
 } from './npcImportance';
 import { applyHiddenStatDrift } from './statDrift';
+import { applyStatImpact } from './statImpact';
 import { createEmptyMemoryGraph } from './types';
 import type {
   EraEventOccurrence,
@@ -27,6 +28,7 @@ import type {
   MemoryGraph,
   Npc,
   NpcId,
+  ObservableStats,
   PlausibilityJudgment,
   ProposedNpc,
   RouterOutput,
@@ -142,8 +144,9 @@ interface FinalizeParams {
 
 /**
  * 클록 진행 + 로그 엔트리 생성 + 다음 GameState 조립. activeScene은 커밋 시점에 항상 비운다.
- * observable은 인자로 안 받는다 — 관계 레코드가 Npc로 옮겨간 뒤로는 드리프트가 절대
- * observable을 안 건드리므로(무지가 리스크 원칙), state.observable을 그대로 spread하면 된다.
+ * observable은 보통 state.observable 그대로 넘기면 된다 — 드리프트는 절대 이걸 안 건드린다
+ * (무지가 리스크 원칙). 유일한 예외는 statImpact의 newVisibleSymptom: 증상은 "확인" 행동
+ * 없이도 서사를 통해 저절로 드러난다는 설계라, 그 경우에만 바뀐 observable이 들어온다.
  */
 function finalizeTurn(
   state: GameState,
@@ -152,6 +155,7 @@ function finalizeTurn(
   memoryGraph: MemoryGraph,
   npcs: Record<NpcId, Npc>,
   hidden: HiddenStats,
+  observable: ObservableStats,
   params: FinalizeParams,
 ): TurnResult {
   let status: GameState['status'] = state.status;
@@ -178,6 +182,7 @@ function finalizeTurn(
     memoryGraph,
     npcs,
     hidden,
+    observable,
     log: [...state.log, logEntry],
     deathInfo: deathInfo ?? state.deathInfo,
     activeScene: undefined,
@@ -217,20 +222,23 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     relevantEraEvents,
   });
 
-  const { memoryGraph, npcs, newNodeIds } = applyDeltaAndNpcs(
+  const { memoryGraph, npcs: npcsAfterDelta, newNodeIds } = applyDeltaAndNpcs(
     state,
     nextTurnIndex,
     routerOutput.elapsedMonths,
     routerOutput.memoryGraphDelta,
     routerOutput.newNpcs,
   );
-  const hidden = applyHiddenStatDrift(state.hidden, routerOutput.elapsedMonths, state.clock.lifeStage);
+  const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, routerOutput.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
   let narrative: string;
   let plausibilityJudgment: PlausibilityJudgment | undefined;
   let death: { cause: string } | null | undefined;
   let entersScene: { involvedNpcIds: string[] } | null | undefined;
+  let hidden = hiddenAfterDrift;
+  let observable = state.observable;
+  let npcs = npcsAfterDelta;
 
   if (routerOutput.turnType === 'detail' && routerOutput.intent) {
     const isDeliberateRecall = routerOutput.intent.actionType === 'recall';
@@ -254,6 +262,10 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     plausibilityJudgment = response.plausibilityJudgment;
     death = response.death;
     entersScene = response.entersScene;
+
+    // PlausibilityJudgment를 실제 상태 변화로 옮기는 지점 — 이게 없으면 판단이 서사 텍스트에만
+    // 남고 hidden/observable엔 아무 흔적도 안 남는다.
+    ({ hidden, observable, npcs } = applyStatImpact(hiddenAfterDrift, state.observable, npcsAfterDelta, response.statImpact));
   } else {
     narrative = buildSkipNarrative(routerOutput.elapsedMonths);
     death = routerOutput.suddenDeath;
@@ -273,7 +285,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
       ? { definitionId: triggeredEraEventDefinition.id, occurredAt: nextClock.date, turnIndex: nextTurnIndex }
       : undefined;
 
-  const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, {
+  const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, observable, {
     kind: routerOutput.turnType,
     playerInput: playerInput ?? undefined,
     narrative,
@@ -340,6 +352,9 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   let sceneEnded = classification.sceneEnded;
   let plausibilityJudgment: PlausibilityJudgment | undefined;
   let death: { cause: string } | null | undefined;
+  let hidden = state.hidden;
+  let observable = state.observable;
+  let npcs = state.npcs;
 
   const needsMainModel = classification.significance === 'significant' || classification.requiresPlausibilityJudgment;
 
@@ -368,6 +383,9 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
     plausibilityJudgment = response.plausibilityJudgment;
     sceneEnded = sceneEnded || response.sceneEnded;
     death = response.death;
+
+    // 씬 진행 중에도(요약을 기다리지 않고) 즉시 반영 — 위험한 시도의 대가는 그 자리에서 나야 한다.
+    ({ hidden, observable, npcs } = applyStatImpact(state.hidden, state.observable, state.npcs, response.statImpact));
   }
 
   const exchange: SceneExchange = {
@@ -379,10 +397,11 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   const updatedExchanges = [...scene.exchanges, exchange];
   const updatedJudgments = plausibilityJudgment ? [...scene.judgments, plausibilityJudgment] : scene.judgments;
   const hitCap = updatedExchanges.length >= MAX_SCENE_EXCHANGES;
+  const stateWithImpact: GameState = { ...state, hidden, observable, npcs };
 
   if (!sceneEnded && !hitCap && !death) {
     const nextState: GameState = {
-      ...state,
+      ...stateWithImpact,
       activeScene: { ...scene, exchanges: updatedExchanges, judgments: updatedJudgments },
     };
     return { state: nextState, exchange };
@@ -395,17 +414,17 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   });
 
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const { memoryGraph, npcs } = applyDeltaAndNpcs(
-    state,
+  const { memoryGraph, npcs: npcsAfterDelta } = applyDeltaAndNpcs(
+    stateWithImpact,
     nextTurnIndex,
     summary.elapsedMonths,
     summary.memoryGraphDelta,
     summary.newNpcs,
   );
-  const hidden = applyHiddenStatDrift(state.hidden, summary.elapsedMonths, state.clock.lifeStage);
+  const hiddenAfterDrift = applyHiddenStatDrift(stateWithImpact.hidden, summary.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, summary.elapsedMonths);
 
-  const concluded = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, {
+  const concluded = finalizeTurn(stateWithImpact, nextTurnIndex, nextClock, memoryGraph, npcsAfterDelta, hiddenAfterDrift, observable, {
     kind: 'detail',
     narrative: summary.narrative,
     plausibilityJudgments: updatedJudgments,

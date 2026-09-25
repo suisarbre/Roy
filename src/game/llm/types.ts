@@ -8,6 +8,7 @@ import type {
   RecalledMemory,
   RouterOutput,
   SceneExchange,
+  StatImpact,
 } from '../types';
 
 export interface RecentLogSummary {
@@ -102,6 +103,8 @@ export interface MainTurnResponse {
   death?: { cause: string } | null;
   /** 이 서사가 왕복 대화로 이어진다면 씬 진입 — 누가 그 자리에 있는지. */
   entersScene?: { involvedNpcIds: string[] } | null;
+  /** 이 사건이 hidden/observable 값에 준 실제 영향 — plausibilityJudgment를 상태에 반영하는 채널. */
+  statImpact?: StatImpact;
 }
 
 /** 씬 안에서 "중요함"으로 분류된 교환에만 호출 — recalledMemories는 관련 NPC 관점으로 필터링된 것. */
@@ -118,6 +121,7 @@ export interface SceneTurnResponse {
   plausibilityJudgment: PlausibilityJudgment;
   sceneEnded: boolean;
   death?: { cause: string } | null;
+  statImpact?: StatImpact;
 }
 
 /** 무거운 메인 모델을 감싸는 클라이언트. 구현체는 나중에 WebLLM으로 붙인다. */

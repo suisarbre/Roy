@@ -477,11 +477,16 @@ export interface AutoAdvanceResult {
  * 도달하거나, 사망하거나, 씬에 진입하면 멈춘다 — 전부 "이제 플레이어 입력이 필요한 시점"이다.
  * 라우터가 계속 skip만 반환해도 MAX_CHAINED_SKIPS에서 강제로 멈춰서 제어권을 돌려준다
  * (서사를 억지로 만들어내지 않고, 그냥 거기까지 보여주고 플레이어가 계속할지 정하게 한다).
+ *
+ * onTurnResolved: 매 턴(스킵 포함)이 끝날 때마다 호출 — 체인이 다 끝날 때까지 기다렸다가
+ * 로그를 한꺼번에 쏟아내지 않고, 호출부(store.ts)가 턴마다 즉시 화면에 반영할 수 있게 한다.
+ * 라우터 호출이 여러 번 이어지는 동안 화면이 멈춰 보이는 것을 줄이기 위함.
  */
 export async function advanceUntilInputNeeded(
   state: GameState,
   deps: GameLoopDeps,
   initialPlayerInput: string | null = null,
+  onTurnResolved?: (result: TurnResult) => void,
 ): Promise<AutoAdvanceResult> {
   const turns: TurnResult[] = [];
   let current = state;
@@ -493,6 +498,7 @@ export async function advanceUntilInputNeeded(
     playerInput = null;
     turns.push(result);
     current = result.state;
+    onTurnResolved?.(result);
 
     if (current.status === 'dead' || current.activeScene || result.logEntry.kind === 'detail') {
       break;

@@ -33,7 +33,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   submitTurn: async (playerInput, deps) => {
     if (get().isProcessingTurn) return;
-    set({ isProcessingTurn: true, streamingNarrative: null });
+    set({ isProcessingTurn: true, streamingNarrative: null, lastChainedTurns: [] });
     try {
       const { state } = get();
 
@@ -46,7 +46,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
         return;
       }
 
-      const { state: nextState, turns } = await advanceUntilInputNeeded(state, deps, playerInput);
+      // 체인 도중 턴이 하나 끝날 때마다 즉시 반영 — 라우터 호출이 여러 번 이어지는 동안
+      // 화면이 멈춰 보이지 않고, 시간이 한 걸음씩 흘러가는 것처럼 보인다.
+      const { state: nextState, turns } = await advanceUntilInputNeeded(state, deps, playerInput, (result) => {
+        set((prev) => ({ state: result.state, lastChainedTurns: [...prev.lastChainedTurns, result] }));
+      });
       set({ state: nextState, lastChainedTurns: turns });
     } finally {
       set({ isProcessingTurn: false, streamingNarrative: null });

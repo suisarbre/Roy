@@ -47,10 +47,14 @@ import type {
 const ROUTER_TEMPERATURE = 0.3;
 const MAIN_TEMPERATURE = 0.8;
 
-/** 응답 길이 안전장치. 라우터는 서사가 거의 없어 짧게, 메인은 한 장면 분량으로 넉넉히 잡되
- *  무한정 늘어지진 않게 캡을 둔다 — 캡에 걸리면 grammar가 강제로 객체를 닫으려 시도한다. */
-const ROUTER_MAX_TOKENS = 512;
-const MAIN_MAX_TOKENS = 768;
+/**
+ * 응답 길이 안전장치이자 실질적인 속도 레버 — 디코딩(출력 생성)은 토큰당 순차 비용이라
+ * prefill보다 훨씬 비싸다. 프롬프트에서 "2-4문장/1-3문장"으로 분량을 조여둔 것과 맞춰서
+ * 캡도 그만큼만 넉넉히 두고 낮춘다(예전엔 문단 단위를 가정해서 더 크게 잡혀 있었다).
+ * 캡에 걸리면 grammar가 강제로 객체를 닫으려 시도한다.
+ */
+const ROUTER_MAX_TOKENS = 300;
+const MAIN_MAX_TOKENS = 400;
 
 const MAX_JSON_RETRIES = 1;
 

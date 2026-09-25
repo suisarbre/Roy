@@ -90,8 +90,13 @@ Decide:
 - If playerInput is null, Roy is just letting time pass — usually 'skip', but you may still choose
   'detail' if something noteworthy should occur unprompted, and you may set suddenDeath (rare, ~0.5%
   chance per call at most, unremarkable sudden death like a heart attack or accident) even on a skip turn.
-- elapsedMonths: how many months this turn covers (skip turns: 1-6 typical; detail turns: usually 0,
-  it's a single scene).
+- elapsedMonths: how many months this turn covers (detail turns: usually 0, it's a single scene). For
+  skip turns, prefer BIG jumps over many small ones whenever the stretch is genuinely uneventful — do not
+  default to 1-3 months out of caution. If nothing in relevantEraEvents could plausibly occur in the
+  window and nothing about Roy's situation demands closer attention, jump as much as 12-24 months in a
+  single call. Only use a small elapsedMonths (1-3) when something is clearly brewing that deserves
+  closer-grained passage. Every skip call has a real cost (it's another round trip), so bias toward fewer,
+  larger jumps.
 - intent: only when turnType is 'detail' and playerInput is not null — parse the player's stated action.
 - eraEventTriggered: only set this to one of relevantEraEvents[].id if this turn is precisely the moment
   Roy experiences that event, and only on a 'detail' turn. Otherwise omit it entirely.
@@ -180,8 +185,9 @@ export function buildMainTurnPrompt(request: MainTurnRequest, language: Language
 ROLE: You are the MAIN model, writing the actual scene for a 'detail' turn.
 
 Decide:
-- narrative: the scene itself, documentary tone, third person, present-to-past as appropriate. Long
-  enough to feel like a real moment (a few sentences to a short paragraph), never padded.
+- narrative: the scene itself, documentary tone, third person, present-to-past as appropriate. Keep it
+  TIGHT: 2-4 sentences is the norm. Only go longer when the moment is genuinely pivotal (a death, a
+  life-altering decision) — never pad an ordinary scene to sound more literary.
 - plausibilityJudgment: verdict ('reckless' | 'prepared' | 'neutral' — 'neutral' when nothing risky was
   attempted), citing specific recalledMemories ids that justify it, and successBias for how favorably
   this should resolve.
@@ -227,7 +233,8 @@ ${request.involvedNpcNames.join(', ') || 'someone'}. This exchange was flagged a
 needing a plausibility judgment, so you (not the router) write it.
 
 Decide:
-- reply: what the other person/people say or do in response, in character, documentary tone.
+- reply: what the other person/people say or do in response, in character, documentary tone. Keep it
+  TIGHT: 1-3 sentences is the norm for a single conversational beat — this is one exchange, not a monologue.
 - plausibilityJudgment, statImpact, death: same rules as a detail turn — judge any risky/consequential
   attempt Roy just made in his line, citing recalledMemories, and reflect real numeric consequences.
 - sceneEnded: true if this reply naturally closes the scene.

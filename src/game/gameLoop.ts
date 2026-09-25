@@ -15,13 +15,16 @@ import {
   resolveNewNpcReferences,
   shouldEncodeIntoNpcMemory,
 } from './npcImportance';
+import { applyHiddenStatDrift, applyRelationshipDrift, ensureRelationshipRecords } from './statDrift';
 import { createEmptyMemoryGraph } from './types';
 import type {
   GameClock,
   GameState,
+  HiddenStats,
   MemoryGraph,
   Npc,
   NpcId,
+  ObservableStats,
   PlausibilityJudgment,
   ProposedNpc,
   RouterOutput,
@@ -64,6 +67,8 @@ interface DeltaApplicationResult {
   memoryGraph: MemoryGraph;
   npcs: Record<NpcId, Npc>;
   newNodeIds: string[];
+  /** 이번에 참여자로 태그된 NPC id — 관계 스탯 드리프트(안 만난 관계만 식음)에도 재사용된다. */
+  participantNpcIds: Set<NpcId>;
 }
 
 /**
@@ -119,7 +124,7 @@ function applyDeltaAndNpcs(
     npcs[npcId] = updatedNpc;
   }
 
-  return { memoryGraph, npcs, newNodeIds };
+  return { memoryGraph, npcs, newNodeIds, participantNpcIds };
 }
 
 interface FinalizeParams {
@@ -139,6 +144,8 @@ function finalizeTurn(
   nextClock: GameClock,
   memoryGraph: MemoryGraph,
   npcs: Record<NpcId, Npc>,
+  hidden: HiddenStats,
+  observable: ObservableStats,
   params: FinalizeParams,
 ): TurnResult {
   let status: GameState['status'] = state.status;
@@ -164,6 +171,8 @@ function finalizeTurn(
     clock: nextClock,
     memoryGraph,
     npcs,
+    hidden,
+    observable,
     log: [...state.log, logEntry],
     deathInfo: deathInfo ?? state.deathInfo,
     activeScene: undefined,
@@ -173,13 +182,36 @@ function finalizeTurn(
 }
 
 /**
- * 한 매크로 턴을 처리한다: 라우터 호출 → 그래프/NPC 갱신 → (detail이면) 메인 모델 호출 →
- * 상태/로그 갱신. 메인 모델이 씬 진입을 신호하면 activeScene을 세팅하고 반환한다 — 다음
- * 입력부터는 이 함수가 아니라 runSceneExchange로 처리해야 한다.
+ * 그래프/NPC 갱신 이후, hidden 스탯의 수동적 드리프트를 적용한다. 새로 생긴 NPC에게 기본
+ * 관계 레코드를 채워주는 것도 여기서 같이 한다(관계 드리프트가 순회할 대상이 있어야 하므로).
+ * observable은 여기서 절대 갱신하지 않는다 — 관계 레코드 초기화 정도만 예외이고, 그 외엔
+ * 플레이어가 직접 확인하는 행동을 해야만 바뀐다는 원칙("무지가 리스크")을 지킨다.
+ */
+function applyStatDrift(
+  state: GameState,
+  npcs: Record<NpcId, Npc>,
+  participantNpcIds: ReadonlySet<NpcId>,
+  elapsedMonths: number,
+): { hidden: HiddenStats; observable: ObservableStats } {
+  const { hidden: ensuredHidden, observable: ensuredObservable } = ensureRelationshipRecords(
+    state.hidden,
+    state.observable,
+    Object.keys(npcs),
+  );
+
+  const driftedHidden = applyHiddenStatDrift(ensuredHidden, elapsedMonths);
+  const relationships = applyRelationshipDrift(driftedHidden.relationships, participantNpcIds, elapsedMonths);
+
+  return { hidden: { ...driftedHidden, relationships }, observable: ensuredObservable };
+}
+
+/**
+ * 한 매크로 턴을 처리한다: 라우터 호출 → 그래프/NPC 갱신 → hidden 스탯 드리프트 →
+ * (detail이면) 메인 모델 호출 → 상태/로그 갱신. 메인 모델이 씬 진입을 신호하면 activeScene을
+ * 세팅하고 반환한다 — 다음 입력부터는 이 함수가 아니라 runSceneExchange로 처리해야 한다.
  *
  * 아직 구현하지 않은 것 (설계 미확정이라 의도적으로 비워둠):
  * - 시대 강제 이벤트 체크 (이벤트 풀 내용 자체가 문서상 미정)
- * - observable/hidden 스탯 드리프트 (밸런스 수치가 아직 없어서, 지금은 상태를 그대로 통과시킴)
  */
 export async function runTurn(state: GameState, playerInput: string | null, deps: GameLoopDeps): Promise<TurnResult> {
   if (state.status === 'dead') {
@@ -200,13 +232,14 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     knownNpcNames,
   });
 
-  const { memoryGraph, npcs, newNodeIds } = applyDeltaAndNpcs(
+  const { memoryGraph, npcs, newNodeIds, participantNpcIds } = applyDeltaAndNpcs(
     state,
     nextTurnIndex,
     routerOutput.elapsedMonths,
     routerOutput.memoryGraphDelta,
     routerOutput.newNpcs,
   );
+  const { hidden, observable } = applyStatDrift(state, npcs, participantNpcIds, routerOutput.elapsedMonths);
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
   let narrative: string;
@@ -226,7 +259,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
 
     const response = await deps.mainModel.runDetailTurn({
       clock: nextClock,
-      observable: state.observable,
+      observable,
       intent: routerOutput.intent,
       recentLog,
       recalledMemories,
@@ -241,7 +274,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     death = routerOutput.suddenDeath;
   }
 
-  const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, {
+  const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, observable, {
     kind: routerOutput.turnType,
     playerInput: playerInput ?? undefined,
     narrative,
@@ -355,16 +388,17 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   });
 
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const { memoryGraph, npcs } = applyDeltaAndNpcs(
+  const { memoryGraph, npcs, participantNpcIds } = applyDeltaAndNpcs(
     state,
     nextTurnIndex,
     summary.elapsedMonths,
     summary.memoryGraphDelta,
     summary.newNpcs,
   );
+  const { hidden, observable } = applyStatDrift(state, npcs, participantNpcIds, summary.elapsedMonths);
   const nextClock = advanceClock(state.clock, nextTurnIndex, summary.elapsedMonths);
 
-  const concluded = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, {
+  const concluded = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, observable, {
     kind: 'detail',
     narrative: summary.narrative,
     plausibilityJudgment,

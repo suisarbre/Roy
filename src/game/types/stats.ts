@@ -1,7 +1,5 @@
 import type { GameDate } from './time';
 
-export type RelationshipId = string; // NpcId 참조
-
 export type ContactFrequency = 'frequent' | 'occasional' | 'rare' | 'none';
 
 export interface HealthCheckupSummary {
@@ -32,13 +30,9 @@ export interface ObservableStats {
     lastCheckup: HealthCheckupSummary | null;
     lastCheckupDate: GameDate | null;
   };
-  relationships: Record<
-    RelationshipId,
-    {
-      contactFrequency: ContactFrequency;
-      lastContactDate: GameDate | null;
-    }
-  >;
+  // 관계 관련 관측값은 Npc.observableRelationship으로 옮겨졌다 — NPC 데이터가
+  // npcs/hidden.relationships/observable.relationships 세 곳에 흩어져 동기화가 깨지기
+  // 쉬웠던 구조를 정리한 것. 특정 NPC의 관측값은 state.npcs[id].observableRelationship에서.
   mentalHealth: {
     /** 수치 없음 — 서사에서 암시되는 증상 태그만 노출 */
     visibleSymptoms: MentalSymptomTag[];
@@ -76,14 +70,7 @@ export interface HiddenStats {
     diseaseProgress: Record<DiseaseId, number>; // 0-100
     chronicSeeds: ChronicConditionSeed[];
   };
-  relationships: Record<
-    RelationshipId,
-    {
-      accumulatedResentment: number;
-      trust: number; // 0-100
-      affection: number; // 0-100
-    }
-  >;
+  // 관계 관련 hidden 값도 Npc.hiddenRelationship으로 옮겨졌다 (위 ObservableStats 주석 참고).
   mentalHealth: {
     stressAccumulation: number; // 0-100+
     burnoutLevel: number; // 0-100

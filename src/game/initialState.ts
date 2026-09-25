@@ -23,13 +23,11 @@ export function createInitialGameState(): GameState {
     observable: {
       finance: { cashOnHand: 0, lastStatementBalance: 0, lastStatementDate: null },
       health: { lastCheckup: null, lastCheckupDate: null },
-      relationships: {},
       mentalHealth: { visibleSymptoms: [] },
     },
     hidden: {
       finance: { netWorth: 0, hiddenDebt: 0, creditStanding: 50 },
       health: { diseaseProgress: {}, chronicSeeds: [] },
-      relationships: {},
       mentalHealth: { stressAccumulation: 0, burnoutLevel: 0 },
     },
     npcs: {},

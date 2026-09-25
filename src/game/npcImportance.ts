@@ -27,6 +27,8 @@ const BASE_IMPORTANCE_BY_RELATION: Record<NpcRelationType, number> = {
   other: 5,
 };
 
+const NEUTRAL_RELATIONSHIP_VALUE = 50;
+
 export function createNpc(params: {
   id: NpcId;
   name: string;
@@ -46,6 +48,12 @@ export function createNpc(params: {
     importanceScore,
     importanceTier,
     memoryGraph: importanceTier === 'major' ? createEmptyMemoryGraph() : undefined,
+    hiddenRelationship: {
+      accumulatedResentment: 0,
+      trust: NEUTRAL_RELATIONSHIP_VALUE,
+      affection: NEUTRAL_RELATIONSHIP_VALUE,
+    },
+    observableRelationship: { contactFrequency: 'none', lastContactDate: null },
   };
 }
 
@@ -104,6 +112,34 @@ export function applyImportanceDecay(npc: Npc, elapsedMonths: number): Npc {
   const importanceScore = Math.max(npc.importanceScore - IMPORTANCE_DECAY_PER_MONTH * elapsedMonths, 0);
   const importanceTier = importanceScore >= IMPORTANCE_PROMOTION_THRESHOLD ? 'major' : 'minor';
   return { ...npc, importanceScore, importanceTier };
+}
+
+function easeTowardNeutral(value: number, amount: number): number {
+  if (value > NEUTRAL_RELATIONSHIP_VALUE) return Math.max(value - amount, NEUTRAL_RELATIONSHIP_VALUE);
+  if (value < NEUTRAL_RELATIONSHIP_VALUE) return Math.min(value + amount, NEUTRAL_RELATIONSHIP_VALUE);
+  return value;
+}
+
+const MONTHLY_RESENTMENT_GROWTH = 0.5;
+const MONTHLY_RELATIONSHIP_COOLING = 0.3;
+
+/**
+ * 이번 턴에 등장하지 않은 NPC에게 호출 — 서운함이 쌓이고 trust/affection이 중립(50)으로
+ * 식는다. 가족도 예외 없이 적용된다(안 만나면 서운한 건 가족도 마찬가지) — 이건
+ * applyImportanceDecay의 가족 예외(그래프 추적 지속 여부)와는 다른 축이다.
+ * 등장했다고 자동으로 좋아지진 않는다 — 긍정적 변화는 서사(메인 모델/씬 요약)의 몫이다.
+ */
+export function driftNpcRelationship(npc: Npc, elapsedMonths: number): Npc {
+  if (elapsedMonths <= 0) return npc;
+
+  return {
+    ...npc,
+    hiddenRelationship: {
+      accumulatedResentment: npc.hiddenRelationship.accumulatedResentment + MONTHLY_RESENTMENT_GROWTH * elapsedMonths,
+      trust: easeTowardNeutral(npc.hiddenRelationship.trust, MONTHLY_RELATIONSHIP_COOLING * elapsedMonths),
+      affection: easeTowardNeutral(npc.hiddenRelationship.affection, MONTHLY_RELATIONSHIP_COOLING * elapsedMonths),
+    },
+  };
 }
 
 /**

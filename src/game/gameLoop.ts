@@ -205,7 +205,7 @@ function applyStatDrift(
     Object.keys(npcs),
   );
 
-  const driftedHidden = applyHiddenStatDrift(ensuredHidden, elapsedMonths);
+  const driftedHidden = applyHiddenStatDrift(ensuredHidden, elapsedMonths, state.clock.lifeStage);
   const relationships = applyRelationshipDrift(driftedHidden.relationships, participantNpcIds, elapsedMonths);
 
   return { hidden: { ...driftedHidden, relationships }, observable: ensuredObservable };
@@ -282,12 +282,17 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   }
 
   // 시대 이벤트는 항상 detail로 제대로 서술돼야 기록한다. 라우터가 skip 턴에 잘못 끼워
-  // 넣었거나(모순), 이번 턴에 제시하지도 않은 id를 지어냈으면(환각) 무시한다.
+  // 넣었거나(모순), 이번 턴에 제시하지도 않은 id를 지어냈거나(환각), 라우터가 계산한
+  // elapsedMonths 때문에 실제 도착 날짜가 그 이벤트의 연도 범위를 벗어나면 무시한다.
+  const triggeredEraEventDefinition =
+    routerOutput.turnType === 'detail' && routerOutput.eraEventTriggered
+      ? relevantEraEvents.find((definition) => definition.id === routerOutput.eraEventTriggered)
+      : undefined;
   const eraEventOccurrence: EraEventOccurrence | undefined =
-    routerOutput.turnType === 'detail' &&
-    routerOutput.eraEventTriggered &&
-    relevantEraEvents.some((definition) => definition.id === routerOutput.eraEventTriggered)
-      ? { definitionId: routerOutput.eraEventTriggered, occurredAt: nextClock.date, turnIndex: nextTurnIndex }
+    triggeredEraEventDefinition &&
+    nextClock.date.year >= triggeredEraEventDefinition.yearRange[0] &&
+    nextClock.date.year <= triggeredEraEventDefinition.yearRange[1]
+      ? { definitionId: triggeredEraEventDefinition.id, occurredAt: nextClock.date, turnIndex: nextTurnIndex }
       : undefined;
 
   const result = finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, observable, {

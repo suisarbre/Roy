@@ -1,4 +1,4 @@
-import type { HiddenStats, NpcId, ObservableStats } from './types';
+import type { HiddenStats, LifeStage, NpcId, ObservableStats } from './types';
 
 // 아래 상수는 전부 임시값이다 — 실제 밸런스는 플레이테스트 후 조정이 필요하다.
 // 핵심은 수치 자체가 아니라 메커니즘(시간이 지나면 hidden 값이 저절로 움직인다)이며,
@@ -16,6 +16,9 @@ const MONTHLY_RELATIONSHIP_COOLING = 0.3;
 
 const NEUTRAL_RELATIONSHIP_VALUE = 50;
 
+/** 이 생애주기 동안은 경제주체가 본인이 아니므로 재정 드리프트를 적용하지 않는다. */
+const LIFE_STAGES_WITHOUT_FINANCE_DRIFT: readonly LifeStage[] = ['infancy', 'childhood'];
+
 function easeTowardNeutral(value: number, amount: number): number {
   if (value > NEUTRAL_RELATIONSHIP_VALUE) return Math.max(value - amount, NEUTRAL_RELATIONSHIP_VALUE);
   if (value < NEUTRAL_RELATIONSHIP_VALUE) return Math.min(value + amount, NEUTRAL_RELATIONSHIP_VALUE);
@@ -27,8 +30,10 @@ function easeTowardNeutral(value: number, amount: number): number {
  * 사건에 따른 큰 변화는 여기서 다루지 않는다 — 그건 메인 모델/씬 요약이 서사로 만들어내는
  * 몫이고, 여기는 "아무 일 없어도 삶은 계속 소모된다"는 배경 물리 법칙만 담당한다.
  */
-export function applyHiddenStatDrift(hidden: HiddenStats, elapsedMonths: number): HiddenStats {
+export function applyHiddenStatDrift(hidden: HiddenStats, elapsedMonths: number, lifeStage: LifeStage): HiddenStats {
   if (elapsedMonths <= 0) return hidden;
+
+  const financeDriftApplies = !LIFE_STAGES_WITHOUT_FINANCE_DRIFT.includes(lifeStage);
 
   const diseaseProgress = Object.fromEntries(
     Object.entries(hidden.health.diseaseProgress).map(([id, progress]) => [
@@ -54,7 +59,9 @@ export function applyHiddenStatDrift(hidden: HiddenStats, elapsedMonths: number)
 
   return {
     ...hidden,
-    finance: { ...hidden.finance, netWorth: hidden.finance.netWorth + MONTHLY_NET_WORTH_DRIFT * elapsedMonths },
+    finance: financeDriftApplies
+      ? { ...hidden.finance, netWorth: hidden.finance.netWorth + MONTHLY_NET_WORTH_DRIFT * elapsedMonths }
+      : hidden.finance,
     health: { ...hidden.health, diseaseProgress, chronicSeeds },
     mentalHealth: { ...hidden.mentalHealth, stressAccumulation, burnoutLevel },
   };

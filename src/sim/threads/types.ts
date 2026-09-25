@@ -127,16 +127,35 @@ export interface DormantState {
  * 최종 단계는 실타래를 resolved로 끝내거나, 결과에 따라 다른 샤드로 transformed된다
  * (예: 소송 패소 → debt 실타래로 전환, 만성질환 진단 확정 → 지속적 decay 실타래로 전환).
  */
+/**
+ * 압력 인스턴스 하나의 단계 하나를 정의한다. stage 자체는 자유 문자열이지만, 그 문자열이
+ * 무슨 뜻인지(방치하면 어디로 가는지, 이 단계 자체가 종결점인지)는 이 표로 명시해야 범용
+ * pressureTick 함수가 "다음이 뭔지" 몰라도 처리할 수 있다.
+ */
+export interface PressureStageDefinition {
+  /** 응답 없이 방치했을 때 자동으로 넘어갈 다음 단계 id. null이면 방치 시의 최종 단계
+   *  (더 나빠질 곳 없이 나쁜 상태로 고착 — 보통 resolved가 아님). */
+  onIgnored: string | null;
+  /** 이 단계에서 응답 없이 버틸 수 있는 개월 수. null이면 마감 없음(드묾 — 대부분의 압력은
+   *  마감이 있어야 "압력"답다). */
+  deadlineMonths: number | null;
+  /** 이 단계 자체가 최종 해소 지점이면 true(예: '판결'로 소송이 끝남). */
+  isResolution?: boolean;
+  /** 이 단계가 실타래를 다른 샤드로 전환시키는 지점이면 그 시드(예: 소송 패소 → debt로 전환). */
+  transformsInto?: { domain: ThreadDomain; shape: ThreadShape };
+}
+
 export interface PressureState {
-  /** 지금 단계. 인스턴스별 자유 문자열(위 설명 참고). */
+  /** 이 압력 인스턴스의 전체 단계 정의 — 생성 시 확정, tick 동안 안 바뀐다. 소송이면
+   *  '접수'→'답변기한'→'심리'→'판결', 건강 위기면 '증상'→'검사'→'진단'→'치료 결정' 등
+   *  인스턴스마다 자기 단계 그래프를 가진다(모든 압력이 같은 단계를 공유하지 않음). */
+  stages: Record<string, PressureStageDefinition>;
+  /** 지금 단계 — stages의 키 중 하나. */
   stage: string;
   /** 이 단계를 맞이한 지 몇 개월째인지. */
   monthsInStage: number;
-  /** 이 단계에서 응답 없이 버틸 수 있는 최대 개월. null이면 마감 없음(관심이 쌓일 때까지
-   *  무기한 대기 — 드묾, 대부분의 압력은 마감이 있어야 "압력"답다). */
-  deadlineMonthsInStage: number | null;
-  /** Roy가 각 단계에서 어떻게 응답했는지 로그 — 다음 단계 선택 + 장면화 시 LLM에게 줄 서사적
-   *  연속성을 위해 보존. */
+  /** Roy가 각 단계에서 어떻게 응답했는지 로그 — 장면화 시 LLM에게 줄 서사적 연속성을 위해
+   *  보존. */
   responseHistory: string[];
 }
 
@@ -205,33 +224,59 @@ export interface SharedResources {
    *  회복시킨다. */
   stress: number;
   /**
-   * **미확정 — 역학 함수를 쓰기 전에 반드시 결정**: 이번 달 Roy가 실타래들에 배분할 수 있는
-   * 총 관심 예산. 각 실타래의 tick에 들어가는 attention(0~1)의 합이 이 값을 넘을 수 없어야
-   * "인생은 트레이드오프"라는 전제가 성립한다(예산이 무제한이면 실타래들이 서로 경쟁하지
-   * 않는다). 두 가지 미결정 사항: (1) 예산 자체를 얼마로 잡을지(실타래 상한 5~7개에 비례해
-   * 2~3 정도가 후보), (2) 예산을 실타래 사이에 나누는 알고리즘 — 매달 플레이어가 명시적으로
-   * attend한 실타래에 우선 배분 + 나머지는 interestEma 비례 배분, 정도가 초안.
+   * 이번 달 Roy가 실타래들에 배분할 수 있는 총 관심 예산. 각 실타래의 tick에 들어가는
+   * attention(0~1)의 합이 이 값을 넘을 수 없어야 "인생은 트레이드오프"라는 전제가 성립한다
+   * (예산이 무제한이면 실타래들이 서로 경쟁하지 않는다). 배분 알고리즘은 attention.ts의
+   * allocateAttention — 명시적으로 attend한 실타래 우선 + 나머지는 interestEma 비례.
+   * 정확한 예산 크기(초안 2~3)와 배분 비율은 3단계 몬테카를로 하네스로 튜닝할 대상이라
+   * 여기 값 자체를 밸런스로 보지 않는다(statImpact.ts의 등급 테이블과 같은 성격).
    */
   attentionBudget: number;
 }
 
-// ---- tick 함수 시그니처 (구현은 다음 서브스텝) ----
+// ---- tick 함수 시그니처 ----
 
 export interface ThreadTickInput {
   elapsedMonths: number;
+  /** 이번 tick이 끝나는 시점의 게임 날짜 — transition의 마감까지 남은 개월 계산 등에 쓴다. */
+  currentDate: GameDate;
   /** 0~1 — attentionBudget에서 이 실타래에 배분된 몫. */
   attention: number;
   resources: SharedResources;
   rng: Rng;
 }
 
+/** tick이 만들어낼 수 있는 "서술할 만한 일이 생겼다" 내부 태그. 플레이어에게 보이는 텍스트가
+ *  아니라, 장면화될 때(7단계) storyteller가 LLM 프롬프트에 참고 맥락으로 넘길 짧은 힌트. */
+export type ThreadEventTag =
+  | 'debtResolved'
+  | 'debtEscalated'
+  | 'debtDeescalated'
+  | 'debtCrisis'
+  | 'decayFizzled'
+  | 'decayResolved'
+  | 'decayCrossedCritical'
+  | 'pursuitResolved'
+  | 'pursuitAbandoned'
+  | 'dormantForcedSurface'
+  | 'dormantSignal'
+  | 'dormantFalseSignal'
+  | 'pressureIgnoredToResolution'
+  | 'pressureIgnoredToTransform'
+  | 'pressureEscalated'
+  | 'transitionArrived';
+
 export interface ThreadTickResult<TState> {
   nextState: TState;
   /** 이번 tick으로 생긴 현저성 변화(단계 전환, 신호, 임계 통과 등) — salience.ts가 소비. */
   salienceDelta: number;
+  /** 공유 자원 풀에 가할 변화(예: 부채 상환으로 money 감소) — board.ts가 모든 실타래의
+   *  tick이 끝난 뒤 한 번에 SharedResources에 합산 적용한다. */
+  resourceDelta?: Partial<Record<keyof SharedResources, number>>;
+  event?: ThreadEventTag;
   endedWith?: ThreadEndReason;
   /** 종료 사유가 'transformed'일 때만 — 새로 생겨날 실타래의 시드(도메인/샤드, 초기 state는
-   *  전환 로직이 채운다). */
+   *  board.ts의 전환 로직이 채운다). */
   transformsInto?: { domain: ThreadDomain; shape: ThreadShape };
 }
 

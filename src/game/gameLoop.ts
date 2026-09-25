@@ -1,7 +1,14 @@
 import { advanceClock } from './clock';
 import type { MainModelClient, RecentLogSummary, RouterModelClient } from './llm/types';
 import { AMBIENT_RECALL_THRESHOLD, EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
-import { applyMemoryGraphDelta, getRecalledMemoryNodeIds } from './memoryGraphOps';
+import {
+  applyMemoryGraphDelta,
+  filterDeltaForParticipant,
+  getParticipantNpcIdsInDelta,
+  getRecalledMemoryNodeIds,
+} from './memoryGraphOps';
+import { registerNpcAppearance, shouldEncodeIntoNpcMemory } from './npcImportance';
+import { createEmptyMemoryGraph } from './types';
 import type { GameState, TurnLogEntry } from './types';
 
 export interface GameLoopDeps {
@@ -62,6 +69,31 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
   );
   const nextClock = advanceClock(state.clock, nextTurnIndex, routerOutput.elapsedMonths);
 
+  // 이번 턴에 등장한(참여자로 태그된) NPC들의 중요도를 갱신하고, major NPC는 확률적으로
+  // 자기만의 독립 그래프에도 이번 사건을 각인시킨다. 아직 state.npcs에 없는 인물(라우터가
+  // 방금 처음 언급한 신규 인물)은 건너뛴다 — NPC 레코드 생성 파이프라인은 별도 과제.
+  const participantNpcIds = getParticipantNpcIdsInDelta(routerOutput.memoryGraphDelta, memoryGraph);
+  let npcs = state.npcs;
+  if (participantNpcIds.length > 0) {
+    npcs = { ...npcs };
+    for (const npcId of participantNpcIds) {
+      const npc = npcs[npcId];
+      if (!npc) continue;
+
+      let updatedNpc = registerNpcAppearance(npc, memoryGraph);
+      if (shouldEncodeIntoNpcMemory(updatedNpc)) {
+        const npcDelta = filterDeltaForParticipant(routerOutput.memoryGraphDelta, npcId);
+        const { graph: npcMemoryGraph } = applyMemoryGraphDelta(
+          updatedNpc.memoryGraph ?? createEmptyMemoryGraph(),
+          npcDelta,
+          nextTurnIndex,
+        );
+        updatedNpc = { ...updatedNpc, memoryGraph: npcMemoryGraph };
+      }
+      npcs[npcId] = updatedNpc;
+    }
+  }
+
   let narrative: string;
   let plausibilityJudgment: TurnLogEntry['plausibilityJudgment'];
   let status: GameState['status'] = state.status;
@@ -116,6 +148,7 @@ export async function runTurn(state: GameState, playerInput: string | null, deps
     status,
     clock: nextClock,
     memoryGraph,
+    npcs,
     log: [...state.log, logEntry],
     deathInfo: deathInfo ?? state.deathInfo,
   };

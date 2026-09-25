@@ -8,6 +8,12 @@ export interface MemoryNode {
   createdAtTurn: number;
   /** 이 노드가 참조/언급된 턴들. 활성화 계산의 입력값. */
   accessTurns: number[];
+  /**
+   * 이 사건/맥락에 실제로 있었던 NPC id들 (NpcId를 쓰면 npc.ts와 순환 참조가 생겨 string[]로 둔다).
+   * NPC별 회상 필터링과 독립 그래프 부트스트랩의 기준이 된다 — 목격하지 않은 NPC는 이 사건을
+   * "알" 수 없다.
+   */
+  participantNpcIds?: string[];
 }
 
 export type MemoryRelation =

@@ -30,7 +30,7 @@ export interface ParsedIntent {
 
 /** 라우터가 새로 제안하는 노드. 실제 id는 아직 없으므로, 같은 턴의 newEdges가 이 노드를
  *  가리킬 수 있도록 라우터가 임의로 붙인 임시 참조용 id. */
-export interface ProposedMemoryNode extends Pick<MemoryNode, 'type' | 'content'> {
+export interface ProposedMemoryNode extends Pick<MemoryNode, 'type' | 'content' | 'participantNpcIds'> {
   localId: string;
 }
 

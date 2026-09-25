@@ -36,6 +36,7 @@ export function applyMemoryGraphDelta(
       content: proposed.content,
       createdAtTurn: currentTurn,
       accessTurns: [currentTurn],
+      participantNpcIds: proposed.participantNpcIds,
     };
   }
 
@@ -128,4 +129,40 @@ export function getRecalledMemoryNodeIds(
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([id]) => id);
+}
+
+/**
+ * 이번 턴 델타에 참여자로 태그된 NPC id들을 모은다 (신규 노드의 participantNpcIds +
+ * accessedNodeIds가 가리키는 기존 노드의 participantNpcIds). NPC 중요도 갱신 여부를
+ * 판단하는 입력으로 쓰인다.
+ */
+export function getParticipantNpcIdsInDelta(
+  delta: RouterOutput['memoryGraphDelta'],
+  graphAfterDelta: MemoryGraph,
+): string[] {
+  const ids = new Set<string>();
+  for (const node of delta.newNodes) {
+    for (const npcId of node.participantNpcIds ?? []) ids.add(npcId);
+  }
+  for (const nodeId of delta.accessedNodeIds) {
+    for (const npcId of graphAfterDelta.nodes[nodeId]?.participantNpcIds ?? []) ids.add(npcId);
+  }
+  return [...ids];
+}
+
+/**
+ * 델타를 특정 NPC 시점으로 좁힌다 — 그 NPC가 참여자로 태그된 신규 노드만 남긴다.
+ * newEdges/accessedNodeIds는 그대로 넘겨도 된다: applyMemoryGraphDelta가 대상 그래프에
+ * 존재하지 않는 참조는 알아서 무시하므로, 이 NPC의 그래프에 없는 노드를 가리키는 엣지/접근은
+ * 자연히 드롭된다.
+ */
+export function filterDeltaForParticipant(
+  delta: RouterOutput['memoryGraphDelta'],
+  npcId: string,
+): RouterOutput['memoryGraphDelta'] {
+  return {
+    newNodes: delta.newNodes.filter((node) => node.participantNpcIds?.includes(npcId)),
+    newEdges: delta.newEdges,
+    accessedNodeIds: delta.accessedNodeIds,
+  };
 }

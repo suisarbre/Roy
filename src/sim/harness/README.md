@@ -8,10 +8,13 @@
 
 | 파일 | 역할 |
 |---|---|
-| `hazards.ts` | "몇 살까지 몇 %"(누적) 또는 "이 구간에 몇 번"(건수)으로 주어진 실측 데이터를 월간 해저드로 바꾸는 변환기 — 나이대별 가우시안 피크, 구간별 건수, 누적→조건부 해저드 세 종류. |
-| `lifeCourse.ts` | 생애사건(결혼/이혼/재혼/취업/자가보유) 스포너. 결혼만 진짜 실타래(decay)로 존재하고, 취업/자가보유는 해저드+카운터로 더 단순하게 추적한다(아래 "알려진 한계" 참고). |
-| `bots.ts` | 정책 봇 3종: `random`(무작위 배분), `workaholic`(work/livelihood/dreams 우선), `familyOriented`(relationships/familyDuty/dwelling 우선). |
+| `bots.ts` | 정책 봇 3종: `random`(무작위 배분), `workaholic`(work/livelihood/dreams 우선), `familyOriented`(relationships/familyDuty/dwelling 우선). 4단계부터는 NPC 기질(`sim/npc`)도 같은 `PolicyBot` 타입을 재사용한다. |
 | `monteCarlo.ts` | `runLife(seed, bot)`로 인생 하나를 결정론적으로 시뮬레이션, `runMonteCarlo(n, botName)`로 n명을 돌려 집계. |
+| `cli.ts` | `npm run sim` 진입점. |
+
+`hazards.ts`/`lifeCourse.ts`는 인구 통계 수준(Roy 개인 서사가 아님) 로직이라 4단계에서
+`sim/hazards.ts`·`sim/lifeCourse.ts`로 옮겨 `sim/npc`의 지연 평가와 공유한다 — 자세한 설명은
+그 파일들 머리 주석 참고.
 
 ## 실행
 

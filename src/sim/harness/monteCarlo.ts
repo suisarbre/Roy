@@ -5,7 +5,7 @@ import { tickMonth } from '../threads/board';
 import type { SharedResources, Thread } from '../threads/types';
 import type { PolicyBot } from './bots';
 import { POLICY_BOTS } from './bots';
-import { createInitialLifeCourseState, respawnMarriageThreadIfStillMarried, tickLifeCourse } from './lifeCourse';
+import { createInitialLifeCourseState, respawnMarriageThreadIfStillMarried, tickLifeCourse } from '../lifeCourse';
 
 /**
  * 헤드리스 몬테카를로 — LLM/브라우저 없이 인생을 순수 함수로 수천 번 돌려서, 정책 봇이

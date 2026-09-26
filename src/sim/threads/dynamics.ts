@@ -1,4 +1,4 @@
-import type { GameDate } from '../../game/types';
+import { dateToTotalMonths } from '../gameDate';
 import type {
   DebtState,
   DecayState,
@@ -21,10 +21,6 @@ import type {
  * 원칙적으로 플레이어의 명시적 close 조작(6단계, IR)에서 나온다 — 시간 경과만으로 "포기"를
  * 만드는 유일한 예외가 pursuit의 모멘텀-바닥 포기 확률 굴림이다(문서에 명시된 대로).
  */
-
-function dateToTotalMonths(date: GameDate): number {
-  return date.year * 12 + (date.month - 1);
-}
 
 // ---- 부채(debt) ----
 

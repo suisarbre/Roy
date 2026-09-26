@@ -1,13 +1,15 @@
-import type { GameDate } from '../../game/types';
-import { isInRecession, unemploymentRateAt } from '../data';
-import type { Rng } from '../rng';
-import type { DecayState, Thread } from '../threads/types';
+import type { GameDate } from '../game/types';
+import { isInRecession, unemploymentRateAt } from './data';
+import type { Rng } from './rng';
+import type { DecayState, Thread } from './threads/types';
 import { ageBandMonthlyHazard, cumulativeToMonthlyHazard, gaussianAgeHazard, type AgeBandRate, type CumulativeAgeBand } from './hazards';
 
 /**
- * 생애사건 스포너 — 3단계 하네스 전용. 실제 게임(gameLoop.ts)의 콘텐츠 레이어(7~8단계)가
- * 아니라, "무작위/일중독/가정적 봇이 사는 평범한 인생"이 실제 통계와 맞는지 검증하기 위한
- * 축약형 모델이다.
+ * 생애사건 스포너 — 원래 3단계 하네스 전용("무작위/일중독/가정적 봇이 사는 평범한 인생"이
+ * 실제 통계와 맞는지 검증하기 위한 축약형 모델)으로 만들었는데, 여기 있는 해저드는
+ * Roy 개인 서사가 아니라 인구 통계 수준(NLSY79 등)이라 Roy 본인이든 임의의 NPC든 똑같이
+ * 적용 가능하다 — 그래서 4단계부터는 sim/npc/lifecycle.ts의 지연 평가(catchUpNpc)도 이걸
+ * 그대로 재사용한다. 여전히 실제 게임(gameLoop.ts)의 콘텐츠 레이어(7~8단계)는 아니다.
  *
  * 결혼은 진짜 decay 실타래로 존재한다(보드에 올라가고 봇의 관심 배분 대상이 된다) — 하지만
  * "이혼했는가"는 이 결혼 실타래가 fizzled됐는지가 아니라, 별도의 지속기간 기반 해저드로

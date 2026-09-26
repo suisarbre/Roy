@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "sim": "tsx src/sim/harness/cli.ts"
+    "sim": "tsx src/sim/harness/cli.ts",
+    "sim:npc": "tsx src/sim/npc/demo.ts"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

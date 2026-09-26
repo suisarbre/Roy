@@ -106,7 +106,8 @@ export const VALIDATION_TARGETS: readonly ValidationTarget[] = [
     population: 'NLSY79 남성, 첫 결혼 보유자',
     source: NLSY79_MARRIAGE,
     howToMeasure: '첫 결혼 중 55세 이전에 이혼으로 종료된 비율. 사별은 이혼이 아님.',
-    byEducation: { lessThanHighSchool: 0.53, bachelorsOrMore: 0.27 },
+    // 원문 HTML 표에서 재확인(2026-09-26): 남성 고졸 미만 52.0%, 고졸 50.2%, 대학 중퇴·전문대 49.7%, 대졸 이상 27.1%.
+    byEducation: { lessThanHighSchool: 0.52, highSchool: 0.502, someCollege: 0.497, bachelorsOrMore: 0.271 },
   },
   {
     id: 'marriage.firstMarriageDurationBeforeDivorce',

@@ -51,3 +51,14 @@ export {
   MARRIAGE_COUNT_SHARES_NLSY79,
   type ValidationTarget,
 } from './validationTargets';
+export {
+  MARRIAGE_MOMENTS,
+  MARRIAGE_MECHANISM_NOTES,
+  CALIFORNIA_DIVORCE_REGIMES,
+  californiaDivorceRegimeAt,
+  US_REFINED_DIVORCE_RATE_ANCHORS,
+  DIVORCE_ERA_FACTS,
+  type CalibrationMoment,
+  type MomentKind,
+  type DivorceRegime,
+} from './marriage';

@@ -2,6 +2,13 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
+## Language support
+
+Development is focused on English only — that's the actively maintained language for new content,
+prompts, and UI strings. The app still ships with translations for 10 other languages
+(`src/i18n.ts`), but they won't automatically stay in sync with new English strings. Contributions
+to keep them current (or add new languages) are welcome via pull request.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)

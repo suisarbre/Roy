@@ -1,8 +1,13 @@
-export type Language = 'ko' | 'en' | 'ja' | 'zh-CN' | 'zh-TW' | 'fr' | 'de' | 'es' | 'pt-BR' | 'ru' | 'it';
+export type Language = 'en' | 'ko' | 'ja' | 'zh-CN' | 'zh-TW' | 'fr' | 'de' | 'es' | 'pt-BR' | 'ru' | 'it';
 
+/**
+ * English('en')이 기본값이자 유일하게 적극적으로 유지보수되는 언어다(개발 방침 변경 —
+ * 사용자 결정). 나머지 10개는 기존 번역을 남겨두되, 새 UI 문자열이 추가될 때 자동으로
+ * 따라가지 않는다 — 기여로 채워지는 걸 전제한다.
+ */
 export const LANGUAGES: { code: Language; label: string }[] = [
-  { code: 'ko', label: '한국어' },
   { code: 'en', label: 'English' },
+  { code: 'ko', label: '한국어' },
   { code: 'ja', label: '日本語' },
   { code: 'zh-CN', label: '简体中文' },
   { code: 'zh-TW', label: '繁體中文' },

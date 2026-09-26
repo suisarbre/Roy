@@ -13,7 +13,7 @@ interface SettingsStore {
 export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set) => ({
-      language: 'ko',
+      language: 'en',
       setLanguage: (language) => set({ language }),
     }),
     { name: 'roy-settings' },

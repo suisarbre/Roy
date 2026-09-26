@@ -1,3 +1,6 @@
+import type { Sex } from '../../sim/data';
+import type { LifeCourseState } from '../../sim/lifeCourse';
+import type { NpcBoard } from '../../sim/npc/types';
 import type { MemoryGraph } from './memory';
 import type { ContactFrequency } from './stats';
 import type { GameDate } from './time';
@@ -54,4 +57,21 @@ export interface Npc {
    */
   hiddenRelationship: NpcHiddenRelationship;
   observableRelationship: NpcObservableRelationship;
+
+  /**
+   * 9단계(1차) — NPC 체크인(npcCheckIn.ts)이 sim/npc/lifecycle.ts의 catchUpNpc를 그대로
+   * 재사용하기 위한 필드. birthYear/sex는 생성 시(npcImportance.ts) 관계 유형 기반
+   * 휴리스틱으로 배정된다 — 실제 사망 확률/생애사건 해저드에 쓰이므로 필수.
+   */
+  birthYear: number;
+  sex: Sex;
+  /** 마지막으로 catchUpNpc를 돌린 게임 날짜 — 지연 평가의 기준점. major가 아니었던 NPC는
+   *  체크인 자체를 안 하므로 그냥 생성 시점에 머물러 있어도 무해하다. */
+  lastSimulatedAt: GameDate;
+  /** major(=close/foreground) 등급이 된 적 있어야 생긴다 — catchUpNpc가 진행시키는 결혼/
+   *  이혼/취업/자가보유 등 이 NPC 독립의 생애사건 상태. */
+  lifeCourse?: LifeCourseState;
+  /** major 등급 NPC가 자기 실타래를 갖는 경우에만 생긴다(Roy의 GameState.threads와는
+   *  별개의 독립 보드) — catchUpNpc가 채운다. */
+  simBoard?: NpcBoard;
 }

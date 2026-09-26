@@ -27,9 +27,9 @@ LLM/브라우저 없이 순수 함수 + 시드 RNG로 동작하는 새 시뮬레
 | `salience.ts` | 5단계 — 현저성 공식(긴급도 × 판돈 × 인지 필터 × (1+관심 EMA) × 피로 감쇠 + 병치 보너스). |
 | `storyteller.ts` | 5단계 — 문턱 편집 + 소프트맥스 샘플링(`selectScene`) + 피로 갱신(`applyStorytellerFatigue`) + "의미 있는 일이 생길 때까지 조용히 흘려보내는" 오케스트레이터(`simulateUntilScene`) — `gameLoop.ts`의 고정 범위 스킵을 대체할 원형. |
 
-## 진행 상태 (2026-09-25 기준)
+## 진행 상태 (2026-09-26 기준)
 
-1~7단계 완료. 8단계는 1차(핵심 엔진 교체) 완료 — 나머지는 후속 작업으로 남김.
+1~7단계 완료. 8, 9단계는 각각 1차(핵심 부분) 완료 — 나머지는 후속 작업으로 남김.
 
 7단계(LLM 축소)는 이 폴더가 아니라 `src/game/`(기존 루프) 쪽에서 진행됐다 — 그 안에서
 모델이 내던 memoryGraphDelta/newNpcs를 `src/game/memoryExtraction.ts`(경량 NER +
@@ -50,13 +50,32 @@ LLM/브라우저 없이 순수 함수 + 시드 RNG로 동작하는 새 시뮬레
 검증: `npm run check:thread-engine`(가짜 LLM 클라이언트로 800사이클까지 구동, trigger
 종류/유한성 확인).
 
-**8단계에서 범위 밖으로 남긴 것** (후속 작업):
+**8단계에서 범위 밖으로 남긴 것** (일부는 9단계가 이행함, 나머지는 여전히 후속 작업):
 - 플레이어의 자유 텍스트 입력이 `input/`의 IR 캐스케이드를 거쳐 실제 보드를 조작하는 것 —
   지금도 플레이어 입력은 그대로 LLM에 날것으로 감(`gameLoop.ts`의 `runPlayerAction`).
-- `npc/`(LOD/지연평가/충돌감지)로 `src/game/npcImportance.ts`를 교체하는 것 — 9단계
-  ("NPC 체크인")와 사실상 같은 작업.
+  여전히 후속 작업.
 - 실타래 콘텐츠를 폭넓게 채우는 것(가족 의무/거처/꿈 등) — 지금은 보드가 비지 않을 만큼의
-  최소 시드만 있다.
+  최소 시드만 있다. 여전히 후속 작업.
+
+**9단계 1차** — `npc/`(LOD/지연 평가 `catchUpNpc`/생애사건 해저드)와
+`src/game/npcImportance.ts`(minor/major, 기억 그래프)를 흡수했다. 전체 4단계 LOD를
+들여오지 않고 "major=close, minor=background" 2→2 매핑 하나로 좁혔다(임계값이 정확히
+50으로 일치하는 걸 활용 — `npc/README.md` 참고). major 등급 NPC는 조용히 시간이 흐를
+때마다(`gameLoop.ts`가 `decayAllNpcs`를 부르던 지점들, 이제 `decayAndCheckInNpcs`)
+`sim/npc/lifecycle.ts`의 `catchUpNpc`를 **재구현 없이 그대로** 호출해 결혼/이혼/재혼/
+취업/자가보유/사망까지 진행시키고, 그 전후 `LifeCourseState` 차이를 코드로 짧은 영어
+사실 문장(예: "Carol got married.")으로 뽑아 낮은 활성화의 새 기억 노드로 조용히
+남긴다(LLM 호출 없음). 이와 별개로 **기억 풍화**(`src/game/memoryWeathering.ts`, 신규
+설계 — 리포에 선례가 전혀 없었다)를 추가해, 오래되고 활성화 낮은 `MemoryNode.content`를
+1회성으로 짧게 줄인다(첫 문장만 남기거나 길이 상한 — 진짜 임베딩/LLM 요약 아님, 값싼
+자리 표시). 검증: `npm run check:npc-checkin`.
+
+**9단계에서 범위 밖으로 남긴 것** (후속 작업):
+- 체크인 사실을 실제 씬으로 능동적으로 엮어내는 것 — `npc/collision.ts`(현저한 이벤트
+  감지)는 있지만 장면화는 여전히 미구현.
+- minor 등급 NPC의 생애사건 시뮬레이션 — 완전히 비활성(기존처럼 중요도 감쇠/관계 냉각만).
+- 체크인 중 발생한 실타래 이벤트(NPC 자기 board의 `ThreadEvent[]`)를 사실 문장으로
+  변환하는 것 — 지금은 `LifeCourseState` 카운터 diff만 사용.
 
 각 단계가 실제로 검증된 방식은 위 표의 npm 스크립트를 실행해서 확인할 것 — 이 README는
 지도일 뿐 결과를 복사해두지 않는다(코드가 바뀌면 이 문서가 아니라 스크립트를 다시 돌려서

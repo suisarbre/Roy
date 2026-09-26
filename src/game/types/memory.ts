@@ -14,6 +14,9 @@ export interface MemoryNode {
    * "알" 수 없다.
    */
   participantNpcIds?: string[];
+  /** 9단계(1차) — memoryWeathering.ts가 이미 content를 압축했는지. true면 다시 건드리지
+   *  않는다(무한 축소 방지 — 한 번 흐려지면 그 상태로 고정, 계속 사라지진 않는다). */
+  weathered?: boolean;
 }
 
 export type MemoryRelation =

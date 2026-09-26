@@ -50,5 +50,10 @@ npm run sim:npc -- 42      # 시드 지정 — 같은 시드는 항상 같은 �
   더 정교해짐).
 - **detectNpcCollisions는 "감지"만 한다** — 감지된 후보를 실제로 장면에 엮는 로직은 없다
   (5~7단계 storyteller 몫).
-- **game/npcImportance.ts(2단계 minor/major, LLM 시대)와 이 모듈(4단계 LOD, 4단계)이
-  당분간 공존한다** — 8단계(엔진 교체)에서 game/ 쪽을 이 모듈로 흡수한다.
+- **game/npcImportance.ts(2단계 minor/major, LLM 시대)와 이 모듈(4단계 LOD)의 흡수는
+  9단계(1차)에서 끝났다** — 단, 전체 4단계 LOD를 들여오지 않고 "major는 close와 같다,
+  minor는 background와 같다"는 2→2 매핑 하나로 좁혀서 흡수했다(임계값 50이 정확히
+  일치하는 걸 활용). `game/npcCheckIn.ts`의 `toSimRecord`가 이 매핑 지점 — `catchUpNpc`는
+  재구현 없이 그대로 재사용된다. acquaintance/background 티어의 "그래도 연 단위 기저율은
+  돈다"는 성격은 아직 game/ 쪽에 들어오지 않았다(minor는 여전히 완전히 비활성) — 필요해지면
+  후속 작업.

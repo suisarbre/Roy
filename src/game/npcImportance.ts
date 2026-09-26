@@ -1,5 +1,6 @@
+import type { Sex } from '../sim/data';
 import { createEmptyMemoryGraph } from './types';
-import type { MemoryGraph, MemoryGraphDelta, Npc, NpcId, NpcRelationType, ProposedNpc } from './types';
+import type { GameDate, MemoryGraph, MemoryGraphDelta, Npc, NpcId, NpcRelationType, ProposedNpc } from './types';
 
 /** 승격 임계값이자, 강등이 허용되는 관계에서 다시 minor로 떨어지는 기준선이기도 하다. */
 export const IMPORTANCE_PROMOTION_THRESHOLD = 50;
@@ -29,15 +30,60 @@ const BASE_IMPORTANCE_BY_RELATION: Record<NpcRelationType, number> = {
 
 const NEUTRAL_RELATIONSHIP_VALUE = 50;
 
+/**
+ * 9단계(1차) — 관계 유형별 "Roy보다 몇 살 많은가(+)/적은가(-)" 무작위 범위. 실제 인구
+ * 통계가 아니라 catchUpNpc(sim/npc/lifecycle.ts)가 사망확률/생애사건 해저드를 굴리는 데
+ * 필요한 최소한의 그럴듯함만 노린 휴리스틱 — statImpact.ts의 등급 테이블과 같은 성격의
+ * 조정 가능한 자리 표시.
+ */
+const AGE_GAP_RANGE_BY_RELATION: Record<Exclude<NpcRelationType, 'parent' | 'child'>, [number, number]> = {
+  spouse: [-8, 8],
+  sibling: [-10, 10],
+  boss: [0, 20],
+  friend: [-6, 6],
+  coworker: [-15, 15],
+  acquaintance: [-15, 15],
+  other: [-15, 15],
+};
+
+function randomInRange(rng: () => number, min: number, max: number): number {
+  return min + rng() * (max - min);
+}
+
+/**
+ * birthYear/sex 배정 — catchUpNpc가 요구하는 필드지만 모델은 이름/관계만 제안하므로
+ * (memoryExtraction.ts의 경량 NER) 코드가 관계 유형만 보고 그럴듯한 값을 채워 넣는다.
+ * parent/child는 범위 표 대신 특별 취급: parent는 Roy가 태어났을 법한 20~35세 터울,
+ * child는 0세부터 Roy 나이 안에서만(음수 나이 방지).
+ */
+function assignBirthYearAndSex(relationType: NpcRelationType, royAgeYears: number, currentYear: number, rng: () => number = Math.random): { birthYear: number; sex: Sex } {
+  const sex: Sex = rng() < 0.5 ? 'male' : 'female';
+
+  let npcAgeYears: number;
+  if (relationType === 'parent') {
+    npcAgeYears = royAgeYears + randomInRange(rng, 20, 35);
+  } else if (relationType === 'child') {
+    npcAgeYears = Math.max(0, royAgeYears - randomInRange(rng, 18, 40));
+  } else {
+    const [min, max] = AGE_GAP_RANGE_BY_RELATION[relationType];
+    npcAgeYears = Math.max(0, royAgeYears + randomInRange(rng, min, max));
+  }
+
+  return { birthYear: Math.round(currentYear - npcAgeYears), sex };
+}
+
 export function createNpc(params: {
   id: NpcId;
   name: string;
   relationType: NpcRelationType;
   firstAppearedTurn: number;
   memoryNodeId: string;
+  royAgeYears: number;
+  currentDate: GameDate;
 }): Npc {
   const importanceScore = BASE_IMPORTANCE_BY_RELATION[params.relationType];
   const importanceTier = importanceScore >= IMPORTANCE_PROMOTION_THRESHOLD ? 'major' : 'minor';
+  const { birthYear, sex } = assignBirthYearAndSex(params.relationType, params.royAgeYears, params.currentDate.year);
   return {
     id: params.id,
     name: params.name,
@@ -54,6 +100,9 @@ export function createNpc(params: {
       affection: NEUTRAL_RELATIONSHIP_VALUE,
     },
     observableRelationship: { contactFrequency: 'none', lastContactDate: null },
+    birthYear,
+    sex,
+    lastSimulatedAt: params.currentDate,
   };
 }
 
@@ -171,6 +220,8 @@ export function createNpcsFromProposals(
   npcLocalIdToRealId: Map<string, string>,
   memoryNodeLocalIdToRealId: Map<string, string>,
   currentTurn: number,
+  royAgeYears: number,
+  currentDate: GameDate,
 ): Record<NpcId, Npc> {
   const created: Record<NpcId, Npc> = {};
   const existingNames = new Set(Object.values(existingNpcs).map((npc) => npc.name));
@@ -182,7 +233,15 @@ export function createNpcsFromProposals(
     const memoryNodeId = memoryNodeLocalIdToRealId.get(proposed.personNodeLocalId);
     if (!id || !memoryNodeId) continue; // 대응하는 노드가 없으면 무시 (환각 방어)
 
-    created[id] = createNpc({ id, name: proposed.name, relationType: proposed.relationType, firstAppearedTurn: currentTurn, memoryNodeId });
+    created[id] = createNpc({
+      id,
+      name: proposed.name,
+      relationType: proposed.relationType,
+      firstAppearedTurn: currentTurn,
+      memoryNodeId,
+      royAgeYears,
+      currentDate,
+    });
     existingNames.add(proposed.name);
   }
 

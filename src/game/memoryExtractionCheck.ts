@@ -9,7 +9,15 @@ import type { Npc, NpcId, RecalledMemory } from './types';
  */
 
 function makeNpc(id: NpcId, name: string): Npc {
-  return createNpc({ id, name, relationType: 'friend', firstAppearedTurn: 0, memoryNodeId: `node-${id}` });
+  return createNpc({
+    id,
+    name,
+    relationType: 'friend',
+    firstAppearedTurn: 0,
+    memoryNodeId: `node-${id}`,
+    royAgeYears: 30,
+    currentDate: { year: 1992, month: 1 },
+  });
 }
 
 function check(label: string, condition: boolean, failures: string[]): void {

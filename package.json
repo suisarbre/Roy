@@ -13,7 +13,8 @@
     "sim:scenes": "tsx src/sim/harness/sceneFrequency.ts",
     "sim:input": "tsx src/sim/input/regressionCli.ts",
     "check:memory-extraction": "tsx src/game/memoryExtractionCheck.ts",
-    "check:thread-engine": "tsx src/game/threadEngineCheck.ts"
+    "check:thread-engine": "tsx src/game/threadEngineCheck.ts",
+    "check:npc-checkin": "tsx src/game/npcCheckInCheck.ts"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

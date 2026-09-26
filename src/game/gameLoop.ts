@@ -16,14 +16,9 @@ import {
   getRecalledMemoriesForNpc,
   getRecalledMemoryNodeIds,
 } from './memoryGraphOps';
-import {
-  applyImportanceDecay,
-  createNpcsFromProposals,
-  driftNpcRelationship,
-  registerNpcAppearance,
-  resolveNewNpcReferences,
-  shouldEncodeIntoNpcMemory,
-} from './npcImportance';
+import { weatherAllGraphs } from './memoryWeathering';
+import { decayAndCheckInNpcs } from './npcCheckIn';
+import { createNpcsFromProposals, registerNpcAppearance, resolveNewNpcReferences, shouldEncodeIntoNpcMemory } from './npcImportance';
 import { applyHiddenStatDrift } from './statDrift';
 import { applyOutcomeImpact } from './statImpact';
 import { ensureBaselineThreads, THREAD_SCENE_SALIENCE_THRESHOLD } from './threadContent';
@@ -147,14 +142,21 @@ function computeSuddenDeathChance(ageYears: number, hidden: HiddenStats): number
   return ageFactor * healthFactor * stressFactor;
 }
 
-/** 조용히 흘러간 시간 동안 모든 NPC를(참여자 없이) 중요도 감쇠+관계 냉각시킨다. */
-function decayAllNpcs(npcs: Record<NpcId, Npc>, elapsedMonths: number): Record<NpcId, Npc> {
-  if (elapsedMonths <= 0) return npcs;
-  const next: Record<NpcId, Npc> = {};
-  for (const [id, npc] of Object.entries(npcs)) {
-    next[id] = driftNpcRelationship(applyImportanceDecay(npc, elapsedMonths), elapsedMonths);
-  }
-  return next;
+/**
+ * 9단계(1차) — 조용히 흘러간 시간 동안 모든 NPC를 감쇠/냉각시키고(기존과 동일), major
+ * 등급은 체크인(npcCheckIn.ts)까지 같이 돌려 그 결과를 memoryGraph에 반영한다.
+ * currentDate는 catchUpNpc가 "이 날짜까지" 따라잡을 기준 — 이번 quiet time이 끝나는
+ * 시점(nextClock.date)이어야 한다.
+ */
+function applyQuietTimePassing(
+  state: GameState,
+  elapsedMonths: number,
+  currentDate: GameDate,
+  nextTurnIndex: number,
+): { npcs: Record<NpcId, Npc>; memoryGraph: MemoryGraph } {
+  const { npcs, delta } = decayAndCheckInNpcs(state.npcs, elapsedMonths, currentDate);
+  const { graph: memoryGraph } = applyMemoryGraphDelta(state.memoryGraph, delta, nextTurnIndex);
+  return { npcs, memoryGraph };
 }
 
 /** 그래프 델타 반영 + NPC 생성/중요도 갱신. 참여하지 않은 NPC의 감쇠는 이미 호출부에서
@@ -172,6 +174,8 @@ function applyDeltaAndNpcs(
   nextTurnIndex: number,
   delta: MemoryGraphDelta,
   proposedNpcs: ProposedNpc[],
+  royAgeYears: number,
+  currentDate: GameDate,
 ): DeltaApplicationResult {
   const npcLocalIdToRealId = new Map(proposedNpcs.map((proposed) => [proposed.localId, crypto.randomUUID()]));
   const resolvedDelta = resolveNewNpcReferences(delta, npcLocalIdToRealId);
@@ -181,7 +185,7 @@ function applyDeltaAndNpcs(
     localIdToRealId: memoryNodeLocalIdToRealId,
   } = applyMemoryGraphDelta(memoryGraph, resolvedDelta, nextTurnIndex);
 
-  const newNpcs = createNpcsFromProposals(npcs, proposedNpcs, npcLocalIdToRealId, memoryNodeLocalIdToRealId, nextTurnIndex);
+  const newNpcs = createNpcsFromProposals(npcs, proposedNpcs, npcLocalIdToRealId, memoryNodeLocalIdToRealId, nextTurnIndex, royAgeYears, currentDate);
 
   const participantNpcIds = new Set(getParticipantNpcIdsInDelta(resolvedDelta, nextMemoryGraph));
   const nextNpcs: Record<NpcId, Npc> = {};
@@ -254,12 +258,15 @@ function finalizeTurn(
     plausibilityJudgments: params.plausibilityJudgments,
   };
 
+  // 9단계(1차) — 매 커밋마다 공유 그래프 + major NPC 각자 그래프를 한 번씩 풍화 검사.
+  const weathered = weatherAllGraphs(memoryGraph, npcs, nextTurnIndex);
+
   const nextState: GameState = {
     ...state,
     status,
     clock: nextClock,
-    memoryGraph,
-    npcs,
+    memoryGraph: weathered.memoryGraph,
+    npcs: weathered.npcs,
     hidden,
     observable,
     threads: simBoard.threads,
@@ -331,7 +338,7 @@ function commitTurnResponse(
     npcs: npcsAfterDelta,
     participantNpcIds,
     resolvedDelta,
-  } = applyDeltaAndNpcs(memoryGraph, npcs, nextTurnIndex, delta, proposedNpcs);
+  } = applyDeltaAndNpcs(memoryGraph, npcs, nextTurnIndex, delta, proposedNpcs, nextClock.ageYears, nextClock.date);
 
   const {
     hidden: nextHidden,
@@ -417,7 +424,12 @@ async function runForcedEvent(state: GameState, decision: Extract<SkipDecision, 
   const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
   const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
   const hiddenAfterQuietTime = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
-  const npcsAfterQuietTime = decayAllNpcs(state.npcs, decision.monthsUntil);
+  const { npcs: npcsAfterQuietTime, memoryGraph: memoryGraphAfterQuietTime } = applyQuietTimePassing(
+    state,
+    decision.monthsUntil,
+    nextClock.date,
+    nextTurnIndex,
+  );
 
   const recentLog = buildRecentLog(state.log);
   const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
@@ -442,7 +454,7 @@ async function runForcedEvent(state: GameState, decision: Extract<SkipDecision, 
     state,
     nextTurnIndex,
     nextClock,
-    state.memoryGraph,
+    memoryGraphAfterQuietTime,
     npcsAfterQuietTime,
     hiddenAfterQuietTime,
     state.observable,
@@ -469,7 +481,12 @@ async function runThreadScene(state: GameState, decision: Extract<SkipDecision, 
   const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
   const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
   const hiddenAfterQuietTime = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
-  const npcsAfterQuietTime = decayAllNpcs(state.npcs, decision.monthsUntil);
+  const { npcs: npcsAfterQuietTime, memoryGraph: memoryGraphAfterQuietTime } = applyQuietTimePassing(
+    state,
+    decision.monthsUntil,
+    nextClock.date,
+    nextTurnIndex,
+  );
 
   const recentLog = buildRecentLog(state.log);
   const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
@@ -488,7 +505,7 @@ async function runThreadScene(state: GameState, decision: Extract<SkipDecision, 
     state,
     nextTurnIndex,
     nextClock,
-    state.memoryGraph,
+    memoryGraphAfterQuietTime,
     npcsAfterQuietTime,
     hiddenAfterQuietTime,
     state.observable,
@@ -507,9 +524,9 @@ function runPureSkip(state: GameState, decision: Extract<SkipDecision, { type: '
   const nextClock = advanceClock(state.clock, nextTurnIndex, decision.months);
   const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.months, state.clock.lifeStage);
   const hidden = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
-  const npcs = decayAllNpcs(state.npcs, decision.months);
+  const { npcs, memoryGraph } = applyQuietTimePassing(state, decision.months, nextClock.date, nextTurnIndex);
 
-  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
+  return finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
     kind: 'skip',
     narrative: getSkipNarrative(decision.months, language),
     plausibilityJudgments: [],
@@ -523,9 +540,9 @@ function runSuddenDeath(state: GameState, decision: Extract<SkipDecision, { type
   const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
   const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
   const hidden = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
-  const npcs = decayAllNpcs(state.npcs, decision.monthsUntil);
+  const { npcs, memoryGraph } = applyQuietTimePassing(state, decision.monthsUntil, nextClock.date, nextTurnIndex);
 
-  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
+  return finalizeTurn(state, nextTurnIndex, nextClock, memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
     kind: 'skip',
     narrative: getSkipNarrative(decision.monthsUntil, language),
     plausibilityJudgments: [],
@@ -687,7 +704,7 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
     npcs: npcsAfterDelta,
     participantNpcIds,
     resolvedDelta,
-  } = applyDeltaAndNpcs(stateWithImpact.memoryGraph, stateWithImpact.npcs, nextTurnIndex, delta, proposedNpcs);
+  } = applyDeltaAndNpcs(stateWithImpact.memoryGraph, stateWithImpact.npcs, nextTurnIndex, delta, proposedNpcs, state.clock.ageYears, state.clock.date);
   const hiddenAfterDrift = applyHiddenStatDrift(stateWithImpact.hidden, summary.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, summary.elapsedMonths);
 

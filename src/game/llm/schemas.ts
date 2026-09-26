@@ -10,64 +10,19 @@
  * TURN_RESPONSE_SCHEMA로 합쳐졌다 — turnType/elapsedMonths/eraEventTriggered는 전부
  * 코드(gameLoop.ts, eraEvents.ts)가 직접 결정하므로 모델이 낼 필요가 없어졌고,
  * statImpact의 9개 숫자 필드는 axis/direction/magnitude 3개짜리 정성적 등급으로 줄었다.
+ *
+ * 7단계(LLM 축소)에서 newNpcs/memoryGraphDelta도 스키마에서 빠졌다 — 그래프 추출은 작은
+ * 모델이 가장 못하는 일이라(비용은 디코딩 토큰인데, narrative 하나 쓰는 것보다 구조화된
+ * 그래프를 환각 없이 뽑아내는 쪽이 훨씬 어렵다), 이제 memoryExtraction.ts가 narrative
+ * 텍스트에서 코드(경량 NER + 표면 유사도)로 직접 뽑아낸다. 모델은 narrative(+판정/영향)만
+ * 내면 된다.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type JsonSchema = Record<string, any>;
 
-const MEMORY_NODE_TYPES = ['person', 'event', 'place', 'object', 'emotionState'];
-const MEMORY_RELATIONS = ['causedBy', 'causes', 'involves', 'locatedAt', 'owns', 'relatedTo', 'feelsTowards'];
-const NPC_RELATION_TYPES = ['parent', 'sibling', 'spouse', 'child', 'friend', 'coworker', 'boss', 'acquaintance', 'other'];
 const MENTAL_SYMPTOM_TAGS = ['insomnia', 'irritability', 'fatigue', 'appetiteChange', 'lossOfInterest', 'panicEpisode'];
 const OUTCOME_AXES = ['finance', 'health', 'mentalHealth', 'relationship'];
-
-const PROPOSED_MEMORY_NODE_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    localId: { type: 'string' },
-    type: { type: 'string', enum: MEMORY_NODE_TYPES },
-    content: { type: 'string' },
-    participantNpcIds: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['localId', 'type', 'content'],
-  additionalProperties: false,
-};
-
-const PROPOSED_MEMORY_EDGE_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    from: { type: 'string' },
-    to: { type: 'string' },
-    relation: { type: 'string', enum: MEMORY_RELATIONS },
-    weight: { type: 'number' },
-  },
-  required: ['from', 'to', 'relation', 'weight'],
-  additionalProperties: false,
-};
-
-const PROPOSED_NPC_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    localId: { type: 'string' },
-    name: { type: 'string' },
-    relationType: { type: 'string', enum: NPC_RELATION_TYPES },
-    personNodeLocalId: { type: 'string' },
-  },
-  required: ['localId', 'name', 'relationType', 'personNodeLocalId'],
-  additionalProperties: false,
-};
-
-/** 셋 다 비어있는 게 흔한 경우라, 델타 자체는 필수로 두되 내부 배열들은 전부 optional로
- *  둬서 "이번엔 아무것도 없음"일 때 `{}` 하나로 끝나게 한다. */
-const MEMORY_GRAPH_DELTA_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    newNodes: { type: 'array', items: PROPOSED_MEMORY_NODE_SCHEMA },
-    newEdges: { type: 'array', items: PROPOSED_MEMORY_EDGE_SCHEMA },
-    accessedNodeIds: { type: 'array', items: { type: 'string' } },
-  },
-  additionalProperties: false,
-};
 
 const PLAUSIBILITY_JUDGMENT_SCHEMA: JsonSchema = {
   type: 'object',
@@ -123,8 +78,6 @@ export const TURN_RESPONSE_SCHEMA: JsonSchema = {
       required: ['involvedNpcIds'],
       additionalProperties: false,
     },
-    newNpcs: { type: 'array', items: PROPOSED_NPC_SCHEMA },
-    memoryGraphDelta: MEMORY_GRAPH_DELTA_SCHEMA,
   },
   required: ['narrative', 'plausibilityJudgment'],
   additionalProperties: false,
@@ -145,14 +98,14 @@ export const SCENE_TURN_RESPONSE_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
-/** summarizeScene 응답 — 씬 전체를 매크로 로그 한 줄 + 그래프 델타로 압축. */
+/** summarizeScene 응답 — 씬 전체를 매크로 로그 한 줄로 압축. 그래프 델타/신규 NPC 추출은
+ *  더 이상 모델이 하지 않는다(위 파일 머리 주석 참고) — memoryExtraction.ts가 이 narrative
+ *  텍스트에서 코드로 직접 뽑는다. */
 export const SCENE_SUMMARY_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
     narrative: { type: 'string' },
     elapsedMonths: { type: 'integer' },
-    newNpcs: { type: 'array', items: PROPOSED_NPC_SCHEMA },
-    memoryGraphDelta: MEMORY_GRAPH_DELTA_SCHEMA,
   },
   required: ['narrative', 'elapsedMonths'],
   additionalProperties: false,

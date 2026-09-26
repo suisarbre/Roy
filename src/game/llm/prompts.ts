@@ -92,26 +92,27 @@ export interface PromptPair {
  * turnType/elapsedMonths/eraEventTriggered 판단은 전부 코드가 이미 끝냈으므로 스키마에서
  * 아예 빠졌다 — 모델은 "무슨 일이 있었는지"만 쓰면 된다.
  */
-export function buildTurnPrompt(request: TurnRequest, language: Language): PromptPair {
-  let triggerInstruction: string;
-  switch (request.trigger.kind) {
+/**
+ * 7단계(LLM 축소)에서 트리거별 지시문(TRIGGER: ...)을 system에서 user로 옮겼다 — system은
+ * 이제 트리거 종류와 무관하게 항상 완전히 같은 문자열이다("고정부 앞, 가변부 뒤": 호출마다
+ * 달라지는 내용은 전부 user 쪽에 몰아서, system이 매번 토씨 하나 안 바뀌는 안정적인 접두부가
+ * 되게 한다 — KV 캐시/prefix 재사용의 전제조건).
+ */
+function turnTriggerInstruction(trigger: TurnRequest['trigger']): string {
+  switch (trigger.kind) {
     case 'playerAction':
-      triggerInstruction = `Roy just did/said this: ${JSON.stringify(request.trigger.playerInput)}. Write the scene that plays out from this attempt.`;
-      break;
+      return `Roy just did/said this: ${JSON.stringify(trigger.playerInput)}. Write the scene that plays out from this attempt.`;
     case 'eraEvent':
-      triggerInstruction = `This is precisely the moment Roy experiences a real historical event: "${request.trigger.definition.label}" (${request.trigger.definition.eligibilityDescription}). Write how it touches his life right now — this is not something Roy chose, it's happening to/around him.`;
-      break;
+      return `This is precisely the moment Roy experiences a real historical event: "${trigger.definition.label}" (${trigger.definition.eligibilityDescription}). Write how it touches his life right now — this is not something Roy chose, it's happening to/around him.`;
     case 'unpromptedEvent':
-      triggerInstruction =
-        "Nothing was scripted for this moment — invent ONE small, plausible unscripted thing that happens to Roy right now, fitting naturally with his current situation and history (recentLog/recalledMemories). This is not player-initiated; Roy didn't choose it. Keep it mundane-but-real, the kind of thing that just happens in a life (not a dramatic twist).";
-      break;
+      return "Nothing was scripted for this moment — invent ONE small, plausible unscripted thing that happens to Roy right now, fitting naturally with his current situation and history (recentLog/recalledMemories). This is not player-initiated; Roy didn't choose it. Keep it mundane-but-real, the kind of thing that just happens in a life (not a dramatic twist).";
   }
+}
 
+export function buildTurnPrompt(request: TurnRequest, language: Language): PromptPair {
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: You write ONE scene/moment and its consequences.
-
-TRIGGER: ${triggerInstruction}
+ROLE: You write ONE scene/moment and its consequences, given a TRIGGER described in the user message.
 
 Decide:
 - narrative: the scene itself, documentary tone, third person. Keep it TIGHT: 2-4 sentences is the norm.
@@ -124,10 +125,6 @@ ${OUTCOME_IMPACT_INSTRUCTION}
 - death: only if Roy's life plausibly ends in this exact moment. Otherwise omit it.
 - entersScene: set this if the natural next step is a back-and-forth conversation/interaction that should
   be played out exchange-by-exchange (list the NPC ids present). Otherwise omit it.
-- newNpcs / memoryGraphDelta: extract any new people, events, places worth remembering from this moment.
-  Only propose newNpcs for names NOT already in knownNpcNames. localId values are your own temporary
-  references within this single response (not real IDs) — newEdges/participantNpcIds may point to them.
-  Omit entirely if nothing is worth remembering.
 
 You only see recalledMemories (a filtered subset of Roy's memory graph, by activation strength) — not his
 whole life. Treat anything not listed there as something you don't currently recall, even if it might
@@ -135,13 +132,14 @@ exist elsewhere in his history.
 
 ${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
-  const user = `Roy's clock: ${jsonBlock(request.clock)}
+  const user = `TRIGGER: ${turnTriggerInstruction(request.trigger)}
+
+Roy's clock: ${jsonBlock(request.clock)}
 
 Observable stats (what would be visible to an outside observer / Roy himself right now):
 ${jsonBlock(request.observable)}
 
-Known NPC names (do not re-propose these as new):
-${jsonBlock(request.knownNpcNames)}
+Known NPC names: ${jsonBlock(request.knownNpcNames)}
 
 Recent log (oldest to newest):
 ${jsonBlock(request.recentLog)}
@@ -155,11 +153,12 @@ Produce the TurnResponse JSON now.`;
 }
 
 /** 씬 안에서 significant/판단 필요로 분류된 교환의 실제 응답. (분류 단계는 없어졌다 — 라우터가
- *  없으므로 모든 교환이 이 호출 하나로 처리된다.) */
+ *  없으므로 모든 교환이 이 호출 하나로 처리된다.) involvedNpcNames는 씬마다 달라지므로 system이
+ *  아니라 user로 뺐다 — system은 어떤 씬이든 완전히 같은 문자열("고정부 앞, 가변부 뒤"). */
 export function buildSceneTurnPrompt(request: SceneTurnRequest, language: Language): PromptPair {
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: You are writing one reply inside an ongoing scene with ${request.involvedNpcNames.join(', ') || 'someone'}.
+ROLE: You are writing one reply inside an ongoing scene, given the people present in the user message.
 
 Decide:
 - reply: what the other person/people say or do in response, in character, documentary tone. Keep it
@@ -172,7 +171,9 @@ ${OUTCOME_IMPACT_INSTRUCTION}
 
 ${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
-  const user = `Scene so far (oldest to newest):
+  const user = `People present in this scene: ${request.involvedNpcNames.join(', ') || 'someone'}
+
+Scene so far (oldest to newest):
 ${jsonBlock(request.exchangesSoFar)}
 
 Roy's new line: ${JSON.stringify(request.playerInput)}
@@ -185,21 +186,22 @@ Produce the SceneTurnResponse JSON now.`;
   return { system, user };
 }
 
-/** 씬 종료 시 전체 교환을 매크로 로그 한 줄 + 그래프 델타로 압축. */
+/** 씬 종료 시 전체 교환을 매크로 로그 한 줄로 압축. 그래프 델타/신규 NPC 추출은 7단계에서
+ *  빠졌다 — gameLoop.ts가 이 narrative를 memoryExtraction.ts에 넘겨 코드로 직접 뽑는다. */
 export function buildSceneSummaryPrompt(request: SceneSummaryRequest, language: Language): PromptPair {
   const system = `${CHARACTER_AND_PRINCIPLES}
 
-ROLE: A scene with ${request.involvedNpcNames.join(', ') || 'someone'} has just ended. Compress the whole
-exchange log into:
+ROLE: A scene has just ended, given the people present in the user message. Compress the whole exchange
+log into:
 - narrative: ONE compact sentence or two for the macro life-log (documentary tone), summarizing what
   this scene amounted to, not a transcript.
 - elapsedMonths: how much game time this scene itself consumed (usually 0 — it's a single sitting).
-- newNpcs / memoryGraphDelta: anything from this scene worth remembering long-term (only genuinely
-  memorable content — not every line of small talk). Omit these entirely if nothing qualifies.
 
 ${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
-  const user = `Full scene exchange log:
+  const user = `People present in this scene: ${request.involvedNpcNames.join(', ') || 'someone'}
+
+Full scene exchange log:
 ${jsonBlock(request.exchanges)}
 
 Roy's clock: ${jsonBlock(request.clock)}

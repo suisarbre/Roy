@@ -1,10 +1,8 @@
 import type {
   EraEventDefinition,
   GameClock,
-  MemoryGraphDelta,
   ObservableStats,
   PlausibilityJudgment,
-  ProposedNpc,
   RecalledMemory,
   SceneExchange,
   OutcomeImpact,
@@ -54,8 +52,6 @@ export interface TurnResponse {
   death?: { cause: string } | null;
   /** 이 서사가 왕복 대화로 이어진다면 씬 진입 — 누가 그 자리에 있는지. */
   entersScene?: { involvedNpcIds: string[] } | null;
-  newNpcs?: ProposedNpc[];
-  memoryGraphDelta?: MemoryGraphDelta;
 }
 
 /** 씬(대화 등) 안에서 "중요함/판단 필요"로 분류된 교환에만 호출 — recalledMemories는
@@ -77,7 +73,9 @@ export interface SceneTurnResponse {
   death?: { cause: string } | null;
 }
 
-/** 씬이 끝날 때 전체 교환 로그를 한 번에 압축 — 매크로 로그/그래프엔 이 결과 하나만 커밋된다. */
+/** 씬이 끝날 때 전체 교환 로그를 한 번에 압축 — 매크로 로그엔 이 결과 하나만 커밋된다.
+ *  그래프 델타/신규 NPC는 더 이상 이 응답에 없다 — gameLoop.ts가 narrative를
+ *  memoryExtraction.ts에 넘겨 코드로 직접 뽑는다(7단계, 위 schemas.ts 머리 주석 참고). */
 export interface SceneSummaryRequest {
   clock: GameClock;
   involvedNpcNames: string[];
@@ -89,8 +87,6 @@ export interface SceneSummary {
   narrative: string;
   /** 씬 자체가 게임 시간에 기여하는 개월 수. 보통 0. */
   elapsedMonths: number;
-  newNpcs: ProposedNpc[];
-  memoryGraphDelta: MemoryGraphDelta;
 }
 
 /** 단일 모델(라우터 없음)을 감싸는 클라이언트. 구현체는 webllmClients.ts. */

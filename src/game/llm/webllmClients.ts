@@ -11,7 +11,7 @@ import type {
   TurnRequest,
   TurnResponse,
 } from './types';
-import type { MentalSymptomTag, OutcomeImpact, PlausibilityJudgment, ProposedMemoryEdge, ProposedMemoryNode, ProposedNpc, MemoryGraphDelta } from '../types';
+import type { MentalSymptomTag, OutcomeImpact, PlausibilityJudgment } from '../types';
 
 /** 서사를 쓰는 호출이라 약간의 다양성을 허용한다. 문법 제약(response_format) 덕에 형식이
  *  깨질 위험은 낮지만, 온도가 너무 높으면 그 안에서도 내용이 산만해질 수 있어 보수적으로 잡는다. */
@@ -159,44 +159,6 @@ async function completeJsonStreaming(
 
 // ---- 응답 정규화: 스키마상 생략된(optional) 필드를 TS의 undefined로 다룬다 ----
 
-function normalizeMemoryGraphDelta(raw: unknown): MemoryGraphDelta {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  const newNodes = Array.isArray(r.newNodes)
-    ? (r.newNodes as Record<string, unknown>[]).map(
-        (n): ProposedMemoryNode => ({
-          localId: String(n.localId),
-          type: n.type as ProposedMemoryNode['type'],
-          content: String(n.content ?? ''),
-          participantNpcIds: Array.isArray(n.participantNpcIds) ? (n.participantNpcIds as string[]) : undefined,
-        }),
-      )
-    : [];
-  const newEdges = Array.isArray(r.newEdges)
-    ? (r.newEdges as Record<string, unknown>[]).map(
-        (e): ProposedMemoryEdge => ({
-          from: String(e.from),
-          to: String(e.to),
-          relation: e.relation as ProposedMemoryEdge['relation'],
-          weight: typeof e.weight === 'number' ? e.weight : 1,
-        }),
-      )
-    : [];
-  const accessedNodeIds = Array.isArray(r.accessedNodeIds) ? (r.accessedNodeIds as string[]) : [];
-  return { newNodes, newEdges, accessedNodeIds };
-}
-
-function normalizeNewNpcs(raw: unknown): ProposedNpc[] {
-  if (!Array.isArray(raw)) return [];
-  return (raw as Record<string, unknown>[]).map(
-    (n): ProposedNpc => ({
-      localId: String(n.localId),
-      name: String(n.name ?? ''),
-      relationType: n.relationType as ProposedNpc['relationType'],
-      personNodeLocalId: String(n.personNodeLocalId),
-    }),
-  );
-}
-
 function normalizePlausibilityJudgment(raw: unknown): PlausibilityJudgment {
   const r = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -249,8 +211,6 @@ export function createWebLLMModel(engine: MLCEngine, language: Language, onNarra
           entersSceneRaw && Array.isArray(entersSceneRaw.involvedNpcIds)
             ? { involvedNpcIds: entersSceneRaw.involvedNpcIds as string[] }
             : null,
-        newNpcs: normalizeNewNpcs(raw.newNpcs),
-        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
       };
     },
 
@@ -273,8 +233,6 @@ export function createWebLLMModel(engine: MLCEngine, language: Language, onNarra
       return {
         narrative: String(raw.narrative ?? ''),
         elapsedMonths: typeof raw.elapsedMonths === 'number' ? Math.max(0, Math.round(raw.elapsedMonths)) : 0,
-        newNpcs: normalizeNewNpcs(raw.newNpcs),
-        memoryGraphDelta: normalizeMemoryGraphDelta(raw.memoryGraphDelta),
       };
     },
   };

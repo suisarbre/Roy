@@ -27,6 +27,14 @@ README가 있다 — 이 파일은 전체 지도 역할만 한다.
 
 ## 진행 상태 (2026-09-25 기준)
 
-1~6단계 완료. 7단계(LLM 축소 — 장면 뼈대만 받는 스키마)부터는 아직. 각 단계가 실제로
-검증된 방식은 위 표의 npm 스크립트를 실행해서 확인할 것 — 이 README는 지도일 뿐 결과를
-복사해두지 않는다(코드가 바뀌면 이 문서가 아니라 스크립트를 다시 돌려서 확인).
+1~7단계 완료. 8단계(gameLoop.ts를 새 엔진으로 교체)부터는 아직.
+
+7단계(LLM 축소)는 이 폴더가 아니라 `src/game/`(기존 루프) 쪽에서 진행됐다 — 8단계가 오기
+전까지 gameLoop.ts는 그대로 유지하되, 그 안에서 모델이 내던 memoryGraphDelta/newNpcs를
+`src/game/memoryExtraction.ts`(경량 NER + `sim/input/similarity.ts`와 같은 표면 유사도
+근사)로 대체했다. 모델 스키마(`src/game/llm/schemas.ts`)는 이제 narrative + 판정/영향/
+사망/씬진입만 낸다. 검증: `npm run check:memory-extraction`.
+
+각 단계가 실제로 검증된 방식은 위 표의 npm 스크립트를 실행해서 확인할 것 — 이 README는
+지도일 뿐 결과를 복사해두지 않는다(코드가 바뀌면 이 문서가 아니라 스크립트를 다시 돌려서
+확인).

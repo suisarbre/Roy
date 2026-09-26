@@ -3,6 +3,7 @@ import { getOpenEraEventCandidates, monthsRemainingInEraEventWindow, rollEraEven
 import { getSkipNarrative, type Language } from '../i18n';
 import type { GameModelClient, RecentLogSummary, TurnResponse } from './llm/types';
 import { EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
+import { extractMemoryUpdate } from './memoryExtraction';
 import {
   applyMemoryGraphDelta,
   filterDeltaForParticipant,
@@ -251,10 +252,17 @@ function commitTurnResponse(
   playerInput: string | undefined,
   response: TurnResponse,
   language: Language,
+  recalledMemories: RecalledMemory[],
   eraEventOccurrence?: EraEventOccurrence,
 ): TurnResult {
-  const delta: MemoryGraphDelta = response.memoryGraphDelta ?? { newNodes: [], newEdges: [], accessedNodeIds: [] };
-  const proposedNpcs = response.newNpcs ?? [];
+  const wasSignificantEvent = response.plausibilityJudgment.verdict !== 'neutral' || response.outcomeImpact !== undefined;
+  const shouldRecordEvent = wasSignificantEvent || Boolean(response.death) || Boolean(response.entersScene);
+  const { delta, proposedNpcs } = extractMemoryUpdate({
+    narrative: response.narrative,
+    npcs,
+    recalledMemories,
+    shouldRecordEvent,
+  });
 
   const {
     memoryGraph: nextMemoryGraph,
@@ -269,7 +277,6 @@ function commitTurnResponse(
     npcs: npcsAfterImpact,
   } = applyOutcomeImpact(hidden, observable, npcsAfterDelta, response.outcomeImpact, response.newVisibleSymptom, language);
 
-  const wasSignificantEvent = response.plausibilityJudgment.verdict !== 'neutral' || response.outcomeImpact !== undefined;
   const npcsFinal = encodeIntoParticipantGraphs(npcsAfterImpact, resolvedDelta, participantNpcIds, nextTurnIndex, wasSignificantEvent);
 
   return finalizeTurn(baseState, nextTurnIndex, nextClock, nextMemoryGraph, npcsFinal, nextHidden, nextObservable, {
@@ -322,6 +329,7 @@ async function runPlayerAction(state: GameState, playerInput: string, deps: Game
     playerInput,
     response,
     deps.language,
+    recalledMemories,
   );
   return attachSceneIfNeeded(result, response.entersScene, nextTurnIndex);
 }
@@ -366,6 +374,7 @@ async function runForcedEvent(state: GameState, monthsUntil: number, trigger: Fo
     undefined,
     response,
     deps.language,
+    recalledMemories,
     eraEventOccurrence,
   );
   return attachSceneIfNeeded(result, response.entersScene, nextTurnIndex);
@@ -513,17 +522,26 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   const summary = await deps.model.summarizeScene({ clock: state.clock, involvedNpcNames, exchanges: updatedExchanges });
 
   const nextTurnIndex = state.clock.turnIndex + 1;
+
+  // 씬 전체에서 나온 판단 중 하나라도 neutral이 아니면 significant로 취급.
+  const wasSceneSignificant = updatedJudgments.some((judgment) => judgment.verdict !== 'neutral');
+  const shouldRecordEvent = wasSceneSignificant || updatedExchanges.some((exchange) => exchange.wasSignificant) || Boolean(response.death);
+  const { delta, proposedNpcs } = extractMemoryUpdate({
+    narrative: summary.narrative,
+    npcs: stateWithImpact.npcs,
+    recalledMemories: recallMemories(stateWithImpact.memoryGraph, state.clock.turnIndex),
+    shouldRecordEvent,
+  });
+
   const {
     memoryGraph,
     npcs: npcsAfterDelta,
     participantNpcIds,
     resolvedDelta,
-  } = applyDeltaAndNpcs(stateWithImpact.memoryGraph, stateWithImpact.npcs, nextTurnIndex, summary.memoryGraphDelta, summary.newNpcs);
+  } = applyDeltaAndNpcs(stateWithImpact.memoryGraph, stateWithImpact.npcs, nextTurnIndex, delta, proposedNpcs);
   const hiddenAfterDrift = applyHiddenStatDrift(stateWithImpact.hidden, summary.elapsedMonths, state.clock.lifeStage);
   const nextClock = advanceClock(state.clock, nextTurnIndex, summary.elapsedMonths);
 
-  // 씬 전체에서 나온 판단 중 하나라도 neutral이 아니면 significant로 취급.
-  const wasSceneSignificant = updatedJudgments.some((judgment) => judgment.verdict !== 'neutral');
   const npcsAfterEncoding = encodeIntoParticipantGraphs(
     npcsAfterDelta,
     resolvedDelta,

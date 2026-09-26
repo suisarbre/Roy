@@ -135,14 +135,18 @@ export function tickMonth(
   const attention = allocateAttention(threads, attendedIds, resources.attentionBudget);
   const nextThreads: Thread[] = [];
   const events: ThreadEvent[] = [];
-  let nextResources = { ...resources };
+  // 모든 실타래가 이번 달 시작 시점의 같은 resources 스냅샷을 본다(먼저 처리된 실타래가
+  // money를 미리 써버려서 뒤 실타래가 고갈된 상태를 보는 순서 의존성을 막기 위함 — delta는
+  // 아래에서 따로 모았다가 루프가 끝난 뒤 한 번에 합산 적용한다, ThreadTickResult.resourceDelta
+  // 주석 참고).
+  const resourceDeltaSum: Partial<Record<keyof SharedResources, number>> = {};
 
   for (const thread of threads) {
     const input: ThreadTickInput = {
       elapsedMonths,
       currentDate,
       attention: attention.get(thread.id) ?? 0,
-      resources: nextResources,
+      resources,
       rng,
     };
     const { shapeState, outcome } = dispatchTick(thread, input);
@@ -150,7 +154,8 @@ export function tickMonth(
     if (outcome.resourceDelta) {
       for (const [key, delta] of Object.entries(outcome.resourceDelta)) {
         if (delta === undefined) continue;
-        nextResources = { ...nextResources, [key]: (nextResources[key as keyof SharedResources] as number) + delta };
+        const resourceKey = key as keyof SharedResources;
+        resourceDeltaSum[resourceKey] = (resourceDeltaSum[resourceKey] ?? 0) + delta;
       }
     }
 
@@ -185,6 +190,13 @@ export function tickMonth(
       } as Thread);
     }
     // resolved/abandoned/fizzled는 그냥 목록에서 빠진다.
+  }
+
+  let nextResources = resources;
+  for (const [key, delta] of Object.entries(resourceDeltaSum)) {
+    if (delta === undefined) continue;
+    const resourceKey = key as keyof SharedResources;
+    nextResources = { ...nextResources, [resourceKey]: nextResources[resourceKey] + delta };
   }
 
   return { threads: nextThreads, resources: nextResources, events };

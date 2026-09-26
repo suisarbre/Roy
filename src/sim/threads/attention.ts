@@ -7,14 +7,18 @@ import type { Thread } from './types';
  */
 export function allocateAttention(threads: readonly Thread[], attendedIds: ReadonlySet<string>, budget: number): Map<string, number> {
   const allocation = new Map<string, number>();
+  const threadIds = new Set(threads.map((thread) => thread.id));
   let remaining = budget;
 
-  for (const thread of threads) {
-    if (attendedIds.has(thread.id) && remaining > 0) {
-      const given = Math.min(1, remaining);
-      allocation.set(thread.id, given);
-      remaining -= given;
-    }
+  // attendedIds의 반복 순서(호출자가 우선순위대로 넣은 순서 — 예: bots.ts의 domainPriorityPolicy가
+  // 점수순으로 정렬한 뒤 Set을 만들면 그 삽입 순서가 그대로 우선순위다)를 존중한다. threads
+  // 배열 순서로 배분하면 attend된 개수가 예산을 넘을 때 봇이 고른 우선순위가 무시되고 배열
+  // 위치가 대신 승자를 정하게 된다.
+  for (const id of attendedIds) {
+    if (!threadIds.has(id) || remaining <= 0) continue;
+    const given = Math.min(1, remaining);
+    allocation.set(id, given);
+    remaining -= given;
   }
 
   const rest = threads.filter((thread) => !allocation.has(thread.id));

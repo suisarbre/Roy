@@ -64,12 +64,6 @@ npm run sim -- --bot=random          # 봇 하나만
   한 번도 실행되지 않는다** — lifeCourse.ts가 만드는 실타래는 결혼(decay)뿐이라, 2단계에서
   작성한 6개 역학 중 5개는 몬테카를로 검증 커버리지가 0이다. 4단계에서 NPC/실타래가
   늘어나면 자연히 exercise되겠지만, 그 전엔 회귀가 생겨도 이 하네스가 못 잡는다.
-- **`board.tickMonth`/`attention.allocateAttention`이 실타래 배열 순서에 의존한다** —
-  자원 delta는 문서(threads/types.ts의 `ThreadTickResult.resourceDelta` 주석)와 달리 매
-  실타래 tick 직후 즉시 다음 실타래에 반영되고("한 번에 합산 적용"이 아님), attend된
-  실타래가 예산보다 많을 때도 봇의 우선순위가 아니라 배열 순서대로 1.0씩 먼저 배분된다.
-  지금은 실타래가 한 번에 최대 1개라 안 드러나지만, 4단계(NPC LOD + 실타래 충돌)에서
-  동시에 여러 실타래가 존재하기 시작하면 바로 영향을 준다 — 4단계 착수 전에 고칠 것.
 - **출산(fertility) 타깃은 검증 안 함** — validationTargets.ts 자체가 "배우자 쪽 검증용"이라
   명시(Roy가 아니라 NPC 배우자의 통계). Roy 본인의 생애 시뮬레이션엔 해당 안 돼서 이번
   패스에서 뺐다.

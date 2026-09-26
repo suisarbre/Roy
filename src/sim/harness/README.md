@@ -1,16 +1,18 @@
-# src/sim/harness — 헤드리스 몬테카를로 (3단계)
+# src/sim/harness — 봇으로 하는 헤드리스 검증 (3, 5단계)
 
-`src/sim/threads`(엔진)와 `src/sim/data`(실제 통계)를 LLM/브라우저 없이 조합해서, "무작위/
-일중독/가정적 봇이 사는 평범한 인생 1,000개"가 `src/sim/data/validationTargets.ts`의 실제
-통계와 맞는지 검증하고 파라미터를 튜닝하는 곳.
+`src/sim/threads`(엔진)와 `src/sim/data`(실제 통계)를 LLM/브라우저 없이 조합해서, 정책
+봇으로 두 가지를 검증하는 곳: (1) "무작위/일중독/가정적 봇이 사는 평범한 인생 1,000개"가
+`src/sim/data/validationTargets.ts`의 실제 통계와 맞는지(3단계), (2) 봇마다 장면 빈도·영역
+비율이 그럴듯하게 달라지는지(5단계, storyteller.ts).
 
 ## 파일
 
 | 파일 | 역할 |
 |---|---|
-| `bots.ts` | 정책 봇 3종: `random`(무작위 배분), `workaholic`(work/livelihood/dreams 우선), `familyOriented`(relationships/familyDuty/dwelling 우선). 4단계부터는 NPC 기질(`sim/npc`)도 같은 `PolicyBot` 타입을 재사용한다. |
-| `monteCarlo.ts` | `runLife(seed, bot)`로 인생 하나를 결정론적으로 시뮬레이션, `runMonteCarlo(n, botName)`로 n명을 돌려 집계. |
-| `cli.ts` | `npm run sim` 진입점. |
+| `bots.ts` | 정책 봇 3종: `random`(무작위 배분), `workaholic`(work/livelihood/dreams 우선), `familyOriented`(relationships/familyDuty/dwelling 우선). `sim/npc`의 NPC 기질도 같은 `PolicyBot`(`sim/attend.ts`) 타입을 재사용한다. |
+| `monteCarlo.ts` | 3단계. `runLife(seed, bot)`로 인생 하나를 결정론적으로 시뮬레이션, `runMonteCarlo(n, botName)`로 n명을 돌려 집계. |
+| `cli.ts` | `npm run sim` 진입점(3단계). |
+| `sceneFrequency.ts` | 5단계. `npm run sim:scenes` 진입점 — 8개 도메인에 실타래를 깔아두고 `storyteller.ts`의 `simulateUntilScene`을 반복 호출해 봇별 장면 빈도/도메인 분포를 측정한다. |
 
 `hazards.ts`/`lifeCourse.ts`는 인구 통계 수준(Roy 개인 서사가 아님) 로직이라 4단계에서
 `sim/hazards.ts`·`sim/lifeCourse.ts`로 옮겨 `sim/npc`의 지연 평가와 공유한다 — 자세한 설명은
@@ -42,6 +44,44 @@ npm run sim -- --bot=random          # 봇 하나만
   25-29세 시점엔 실측보다 덜 도달한 상태로 측정된다. 구간을 더 잘게 쪼개면 나아질 것 —
   다음 튜닝 대상으로 남겨둠.
 
+## 5단계: 장면 빈도/영역 비율 (`npm run sim:scenes`)
+
+```bash
+npm run sim:scenes                 # threshold=0.5, 40년
+npm run sim:scenes -- 0.3 20       # threshold=0.3, 20년
+```
+
+8개 도메인에 실타래를 하나씩 깔아두고(해소되면 같은 도메인으로 리스폰) 각 정책 봇으로
+40년을 굴려 장면 빈도·도메인 분포를 잰다. 비교할 실측 타깃은 없다 — "장면이 몇 달에 한
+번 나야 적당한가"는 통계가 아니라 서사 밀도 취향의 문제이기 때문이다. 대신 확인하는 건
+"봇마다 확연히 다른 삶이 나오는가"이고, seed=1 기준 실제로 이렇다:
+
+| 봇 | 장면 수/40년 | 평균 간격 | 지배적 도메인 |
+|---|---|---|---|
+| random | 6 | 80.0개월 | dreams(4) |
+| workaholic | 44 | 10.9개월 | dreams(43) |
+| familyOriented | 61 | 7.9개월 | livelihood(36) |
+
+세 봇이 극적으로 다르다는 점(6 vs 44 vs 61회, 완전히 다른 도메인 분포)은 확인됐다 — 5단계의
+핵심 주장("관심 배분이 다르면 삶이 다르게 편집된다")은 성립한다. 다만 "왜" 그 도메인이
+지배적인지는 다소 반직관적이다:
+
+- **workaholic → dreams 폭주**: work/livelihood/dreams 셋 다 매달 attention=1.0을 받는데
+  (우선순위 셋 + attentionBudget=3이 정확히 맞아떨어져서), pursuit(dreams)만 momentum이
+  100까지 오르면 반복적으로 resolved(salience 0.8)를 찍고 리스폰되는 반면 decay(work)는
+  이미 건강한 상태라 조용하다 — "일중독이 목표를 계속 달성해서 장면이 된다"는 나름
+  그럴듯하지만, "일 자체"가 장면이 되는 게 아니라 "꿈"이 되는 건 이 데모의 모양(shape)
+  배정(work=decay, dreams=pursuit) 때문이다.
+- **familyOriented → livelihood 폭주**: relationships/familyDuty/dwelling만 챙기고 나머지
+  5개 도메인(livelihood 포함)은 영원히 방치되는데, debt(livelihood)는 방치될수록 단계가
+  계단식으로 악화하다(current→late→collections→legal→crisis) 매번 salience 0.6~1.0을
+  찍고 다시 시작한다 — "가정에 집중하느라 돈 문제를 방치해서 계속 위기가 터진다"는 이것도
+  나름 그럴듯한 서사다.
+
+즉 메커니즘(현저성·문턱·소프트맥스)은 의도대로 동작하지만, 어느 도메인이 "터지기 쉬운가"는
+모양(shape)별 살리언스 곡선의 산물이지 콘텐츠로 설계된 게 아니다 — 실제 밸런스는 7~8단계
+콘텐츠 레이어에서 다시 볼 것.
+
 ## 알려진 한계 (다음 단계에서 다룰 것)
 
 - **3개 봇이 통계적으로 완전히 동일한 결과를 낸다** (`npm run sim`으로 확인 가능 — random/
@@ -63,10 +103,10 @@ npm run sim -- --bot=random          # 봇 하나만
   decay 실타래 자체는 "결혼이 존재한다"는 표식으로만 남겨뒀다. 일/생계까지 진짜 실타래로
   모델링해서 attentionBudget이 실제로 경합하게 만드는 건 이후 단계(7~8단계, 콘텐츠 레이어)
   과제.
-- **`debtTick`/`pursuitTick`/`dormantTick`/`pressureTick`/`transitionTick`은 이 하네스에서
-  한 번도 실행되지 않는다** — lifeCourse.ts가 만드는 실타래는 결혼(decay)뿐이라, 2단계에서
-  작성한 6개 역학 중 5개는 몬테카를로 검증 커버리지가 0이다. 4단계에서 NPC/실타래가
-  늘어나면 자연히 exercise되겠지만, 그 전엔 회귀가 생겨도 이 하네스가 못 잡는다.
+- **`monteCarlo.ts`(3단계 하네스) 자체는 여전히 decay(결혼) 하나만 돌린다** — 위 한계는
+  그대로다. 다만 `dormantTick`을 뺀 나머지 5개 역학(debt/pursuit/pressure/transition +
+  decay)은 이제 `npc/demo.ts`와 `sceneFrequency.ts`에서 exercise된다 — `dormantTick`만
+  여전히 커버리지 0(어디서도 dormant 실타래를 만들지 않음).
 - **출산(fertility) 타깃은 검증 안 함** — validationTargets.ts 자체가 "배우자 쪽 검증용"이라
   명시(Roy가 아니라 NPC 배우자의 통계). Roy 본인의 생애 시뮬레이션엔 해당 안 돼서 이번
   패스에서 뺐다.

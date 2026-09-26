@@ -25,6 +25,16 @@ import type {
  * 여기서 한다: 관심 배분 -> 샤드별 tick 디스패치 -> 자원 변화 합산 -> 종료/전환 처리.
  */
 
+/** 5단계 현저성 공식의 "(1+관심 EMA)" 항이 실제로 움직이게 하는 갱신값 — 얼마나 빨리 최근
+ *  관심을 반영할지. 미확정, 튜닝 대상. */
+const INTEREST_EMA_ALPHA = 0.2;
+
+/** elapsedMonths 동안 매달 같은 attention 표본이 반복됐다고 보고 EMA를 한 번에 갱신한다
+ *  (매달 값이 바뀌지 않으므로 반복 적용의 닫힌 형태를 쓴다 — 루프 불필요). */
+function decayedEma(previous: number, sample: number, alpha: number, steps: number): number {
+  return sample + Math.pow(1 - alpha, steps) * (previous - sample);
+}
+
 /** dispatchTick의 반환값에서 nextState를 뺀 나머지 — 샤드마다 nextState 타입이 달라서
  *  공통 부분만 이 타입으로 다룬다(shapeState가 이미 nextState를 담고 있으므로 중복 불필요). */
 interface TickOutcome {
@@ -142,14 +152,16 @@ export function tickMonth(
   const resourceDeltaSum: Partial<Record<keyof SharedResources, number>> = {};
 
   for (const thread of threads) {
+    const attentionThisTick = attention.get(thread.id) ?? 0;
     const input: ThreadTickInput = {
       elapsedMonths,
       currentDate,
-      attention: attention.get(thread.id) ?? 0,
+      attention: attentionThisTick,
       resources,
       rng,
     };
     const { shapeState, outcome } = dispatchTick(thread, input);
+    const nextInterestEma = decayedEma(thread.interestEma, attentionThisTick, INTEREST_EMA_ALPHA, elapsedMonths);
 
     if (outcome.resourceDelta) {
       for (const [key, delta] of Object.entries(outcome.resourceDelta)) {
@@ -171,7 +183,7 @@ export function tickMonth(
     }
 
     if (!outcome.endedWith) {
-      nextThreads.push({ ...thread, ...shapeState } as Thread);
+      nextThreads.push({ ...thread, ...shapeState, interestEma: nextInterestEma } as Thread);
       continue;
     }
 
@@ -185,6 +197,7 @@ export function tickMonth(
         label: `${thread.label} (전환됨)`,
         origin: `${thread.shape} 실타래 "${thread.label}"에서 전환`,
         createdAtTurn: thread.createdAtTurn,
+        interestEma: nextInterestEma,
         fatigue: 0,
         lastSceneAtTurn: undefined,
       } as Thread);

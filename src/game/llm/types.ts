@@ -1,3 +1,5 @@
+import type { ThreadEvent } from '../../sim/threads/board';
+import type { Thread } from '../../sim/threads/types';
 import type {
   EraEventDefinition,
   GameClock,
@@ -20,11 +22,15 @@ export interface RecentLogSummary {
  * 판단)는 전부 코드가 직접 결정한다(gameLoop.ts, eraEvents.ts). 라우터가 있던 시절엔 매 턴
  * 이 판단 자체를 모델에게 물었지만, 지금은 "이미 뭔가 서술해야 한다고 코드가 정한 순간"에만
  * 모델이 불려온다.
+ *
+ * 8단계(1차)에서 `unpromptedEvent`(12% 확률로 모델이 아무거나 즉석에서 지어내던 낡은
+ * 돌발 사건)가 `threadScene`으로 교체됐다 — 이제 "코드가 만든 즉흥 사건"도 실타래 엔진이
+ * 매달 결정적으로 진행시킨 구조화된 근거(어느 실타래가, 왜 지금 눈에 띄었는지)를 갖는다.
  */
 export type TurnTrigger =
   | { kind: 'playerAction'; playerInput: string }
   | { kind: 'eraEvent'; definition: EraEventDefinition }
-  | { kind: 'unpromptedEvent' };
+  | { kind: 'threadScene'; thread: Thread; event: ThreadEvent };
 
 /**
  * 모델에게도 전체 GameState/그래프를 주지 않는다 — 그래프에서 활성화 기준으로 이미

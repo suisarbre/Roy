@@ -1,6 +1,11 @@
 import { advanceClock } from './clock';
 import { getOpenEraEventCandidates, monthsRemainingInEraEventWindow, rollEraEventTrigger } from './eraEvents';
 import { getSkipNarrative, type Language } from '../i18n';
+import { randomPolicy } from '../sim/attend';
+import type { JuxtapositionState } from '../sim/salience';
+import { simulateUntilScene } from '../sim/storyteller';
+import type { ThreadEvent } from '../sim/threads/board';
+import type { SharedResources, Thread } from '../sim/threads/types';
 import type { GameModelClient, RecentLogSummary, TurnResponse } from './llm/types';
 import { EFFORTFUL_RECALL_THRESHOLD } from './memoryActivation';
 import { extractMemoryUpdate } from './memoryExtraction';
@@ -21,12 +26,14 @@ import {
 } from './npcImportance';
 import { applyHiddenStatDrift } from './statDrift';
 import { applyOutcomeImpact } from './statImpact';
+import { ensureBaselineThreads, THREAD_SCENE_SALIENCE_THRESHOLD } from './threadContent';
 import { pickRandomSuddenDeathCause } from './textTemplates';
 import { createEmptyMemoryGraph } from './types';
 import type {
   EraEventDefinition,
   EraEventOccurrence,
   GameClock,
+  GameDate,
   GameState,
   HiddenStats,
   MemoryGraph,
@@ -61,12 +68,62 @@ const MAX_SCENE_EXCHANGES = 12;
 const MAX_CHAINED_SKIPS = 10;
 const MIN_SKIP_STRETCH_MONTHS = 6;
 const MAX_SKIP_STRETCH_MONTHS = 18;
-/** 평범한 스킵 사이클(6-18개월) 하나당 "뭔가 돌발적으로 일어날" 확률 — 걸리면 그 순간만
- *  모델을 불러 즉석 묘사시킨다(라우터 제거 + 모델 호출 최소화, 사용자 결정). */
-const SURPRISE_EVENT_CHANCE = 0.12;
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/**
+ * 8단계(1차) — src/sim/의 실타래 보드 상태를 한데 묶은 것. GameState 필드 3개
+ * (threads/sharedResources/juxtapositionState)를 사이클마다 같이 옮겨 다니게 하는
+ * 편의 타입일 뿐, 별도로 저장되지 않는다.
+ */
+interface SimBoardState {
+  threads: Thread[];
+  sharedResources: SharedResources;
+  juxtapositionState: JuxtapositionState;
+}
+
+/**
+ * sharedResources는 사이클 동안만 쓰는 작업용 스냅샷이지 별도 진실 소스가 아니다(GameState
+ * 필드 주석 참고) — 매 사이클 시작 시 hidden에서 재시딩한다. attentionBudget은 hidden에
+ * 대응하는 값이 없으므로 그대로 이월.
+ */
+function seedSharedResourcesFromHidden(sharedResources: SharedResources, hidden: HiddenStats): SharedResources {
+  return { ...sharedResources, money: hidden.finance.netWorth, stress: hidden.mentalHealth.stressAccumulation };
+}
+
+/** tick 전후 sharedResources의 변화량만 hidden 쪽에 다시 써넣는다 — 실타래가 만든 변화가
+ *  플레이어가 실제로 보는(관찰 가능한 파생값의 기반이 되는) 상태에 반영되게 한다. */
+function syncResourcesIntoHidden(prev: SharedResources, next: SharedResources, hidden: HiddenStats): HiddenStats {
+  const moneyDelta = next.money - prev.money;
+  const stressDelta = next.stress - prev.stress;
+  if (moneyDelta === 0 && stressDelta === 0) return hidden;
+  return {
+    ...hidden,
+    finance: { ...hidden.finance, netWorth: hidden.finance.netWorth + moneyDelta },
+    mentalHealth: { ...hidden.mentalHealth, stressAccumulation: Math.max(0, hidden.mentalHealth.stressAccumulation + stressDelta) },
+  };
+}
+
+/**
+ * 시대 이벤트/급사가 이번 순간을 가져갈 때도 그동안(months) 실타래는 조용히 진행돼야
+ * 한다 — threshold를 절대 못 넘을 값(Infinity)으로 줘서 simulateUntilScene을 "장면 선택
+ * 없이 그냥 months만큼만 tick"하는 용도로 재사용한다(로직 중복 없이).
+ */
+function tickThreadsSilently(board: SimBoardState, currentDate: GameDate, months: number): SimBoardState {
+  if (months <= 0) return board;
+  const result = simulateUntilScene(
+    board.threads,
+    board.sharedResources,
+    currentDate,
+    randomPolicy,
+    Number.POSITIVE_INFINITY,
+    board.juxtapositionState,
+    Math.random,
+    months,
+  );
+  return { threads: result.threads, sharedResources: result.resources, juxtapositionState: result.juxtapositionState };
 }
 
 function buildRecentLog(log: TurnLogEntry[]): RecentLogSummary[] {
@@ -178,6 +235,7 @@ function finalizeTurn(
   npcs: Record<NpcId, Npc>,
   hidden: HiddenStats,
   observable: ObservableStats,
+  simBoard: SimBoardState,
   params: FinalizeParams,
 ): TurnResult {
   let status: GameState['status'] = state.status;
@@ -204,6 +262,9 @@ function finalizeTurn(
     npcs,
     hidden,
     observable,
+    threads: simBoard.threads,
+    sharedResources: simBoard.sharedResources,
+    juxtapositionState: simBoard.juxtapositionState,
     log: [...state.log, logEntry],
     deathInfo: deathInfo ?? state.deathInfo,
     activeScene: undefined,
@@ -249,6 +310,7 @@ function commitTurnResponse(
   npcs: Record<NpcId, Npc>,
   hidden: HiddenStats,
   observable: ObservableStats,
+  simBoard: SimBoardState,
   playerInput: string | undefined,
   response: TurnResponse,
   language: Language,
@@ -279,7 +341,7 @@ function commitTurnResponse(
 
   const npcsFinal = encodeIntoParticipantGraphs(npcsAfterImpact, resolvedDelta, participantNpcIds, nextTurnIndex, wasSignificantEvent);
 
-  return finalizeTurn(baseState, nextTurnIndex, nextClock, nextMemoryGraph, npcsFinal, nextHidden, nextObservable, {
+  return finalizeTurn(baseState, nextTurnIndex, nextClock, nextMemoryGraph, npcsFinal, nextHidden, nextObservable, simBoard, {
     kind: 'detail',
     playerInput,
     narrative: response.narrative,
@@ -326,6 +388,7 @@ async function runPlayerAction(state: GameState, playerInput: string, deps: Game
     state.npcs,
     state.hidden,
     state.observable,
+    { threads: state.threads, sharedResources: state.sharedResources, juxtapositionState: state.juxtapositionState },
     playerInput,
     response,
     deps.language,
@@ -334,18 +397,27 @@ async function runPlayerAction(state: GameState, playerInput: string, deps: Game
   return attachSceneIfNeeded(result, response.entersScene, nextTurnIndex);
 }
 
-type ForcedTrigger = { kind: 'eraEvent'; definition: EraEventDefinition } | { kind: 'unpromptedEvent' };
+/**
+ * 8단계(1차) — "계속하기" 사이클이 뭘로 이어질지 결정한 뒤, 그 결정이 실타래 보드에 만든
+ * tick 결과까지 같이 들고 다니는 타입. prevSharedResources는 이번 사이클 tick 입력으로 쓴
+ * (hidden에서 재시딩된) 스냅샷 — 커밋 시점에 syncResourcesIntoHidden의 델타 기준이 된다.
+ */
+type SkipDecision =
+  | { type: 'pureSkip'; months: number; prevSharedResources: SharedResources; simBoard: SimBoardState }
+  | { type: 'suddenDeath'; monthsUntil: number; cause: string; prevSharedResources: SharedResources; simBoard: SimBoardState }
+  | { type: 'eraEvent'; monthsUntil: number; definition: EraEventDefinition; prevSharedResources: SharedResources; simBoard: SimBoardState }
+  | { type: 'threadScene'; monthsUntil: number; thread: Thread; event: ThreadEvent; prevSharedResources: SharedResources; simBoard: SimBoardState };
 
 /**
- * 코드가 이미 "지금이 그 순간"이라고 정한 시대 이벤트, 또는 낮은 확률로 뽑힌 돌발 사건.
- * monthsUntil만큼은 조용히 흘러간 뒤(그동안 NPC 감쇠/hidden 드리프트만 적용) 이 순간을
- * 모델이 서술한다.
+ * 코드가 이미 "지금이 그 순간"이라고 정한 시대 이벤트. monthsUntil만큼은 조용히 흘러간 뒤
+ * (그동안 NPC 감쇠/hidden 드리프트/실타래 tick만 적용) 이 순간을 모델이 서술한다.
  */
-async function runForcedEvent(state: GameState, monthsUntil: number, trigger: ForcedTrigger, deps: GameLoopDeps): Promise<TurnResult> {
+async function runForcedEvent(state: GameState, decision: Extract<SkipDecision, { type: 'eraEvent' }>, deps: GameLoopDeps): Promise<TurnResult> {
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const nextClock = advanceClock(state.clock, nextTurnIndex, monthsUntil);
-  const hiddenAfterQuietTime = applyHiddenStatDrift(state.hidden, monthsUntil, state.clock.lifeStage);
-  const npcsAfterQuietTime = decayAllNpcs(state.npcs, monthsUntil);
+  const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
+  const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
+  const hiddenAfterQuietTime = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
+  const npcsAfterQuietTime = decayAllNpcs(state.npcs, decision.monthsUntil);
 
   const recentLog = buildRecentLog(state.log);
   const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
@@ -354,14 +426,17 @@ async function runForcedEvent(state: GameState, monthsUntil: number, trigger: Fo
   const response = await deps.model.runTurn({
     clock: nextClock,
     observable: state.observable,
-    trigger,
+    trigger: { kind: 'eraEvent', definition: decision.definition },
     recentLog,
     recalledMemories,
     knownNpcNames,
   });
 
-  const eraEventOccurrence: EraEventOccurrence | undefined =
-    trigger.kind === 'eraEvent' ? { definitionId: trigger.definition.id, occurredAt: nextClock.date, turnIndex: nextTurnIndex } : undefined;
+  const eraEventOccurrence: EraEventOccurrence = {
+    definitionId: decision.definition.id,
+    occurredAt: nextClock.date,
+    turnIndex: nextTurnIndex,
+  };
 
   const result = commitTurnResponse(
     state,
@@ -371,6 +446,7 @@ async function runForcedEvent(state: GameState, monthsUntil: number, trigger: Fo
     npcsAfterQuietTime,
     hiddenAfterQuietTime,
     state.observable,
+    decision.simBoard,
     undefined,
     response,
     deps.language,
@@ -380,70 +456,143 @@ async function runForcedEvent(state: GameState, monthsUntil: number, trigger: Fo
   return attachSceneIfNeeded(result, response.entersScene, nextTurnIndex);
 }
 
-/** 모델 호출 없는 평범한 시간 경과 — 클록 전진 + 드리프트 + 템플릿 서사. */
-function runPureSkip(state: GameState, months: number, language: Language): TurnResult {
+/**
+ * 8단계(1차) — 실타래 엔진이 매달 결정적으로 진행시키다 현저성 문턱을 넘긴 순간(낡은
+ * unpromptedEvent 대체). monthsUntil은 simulateUntilScene이 실제로 소진한 개월 수 —
+ * decideSkipStretch가 고른 stretchMonths보다 짧을 수 있다(장면을 일찍 찾으면 거기서 멈춤).
+ * entersScene이 오면 기존 attachSceneIfNeeded/runSceneExchange가 그대로 이어받는다 — 이게
+ * "기존 씬 시스템을 실타래 장면으로 흡수"의 실체: 대화 메커니즘 자체는 안 바뀌고, 트리거만
+ * 실타래 쪽에서 온다.
+ */
+async function runThreadScene(state: GameState, decision: Extract<SkipDecision, { type: 'threadScene' }>, deps: GameLoopDeps): Promise<TurnResult> {
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const nextClock = advanceClock(state.clock, nextTurnIndex, months);
-  const hidden = applyHiddenStatDrift(state.hidden, months, state.clock.lifeStage);
-  const npcs = decayAllNpcs(state.npcs, months);
+  const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
+  const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
+  const hiddenAfterQuietTime = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
+  const npcsAfterQuietTime = decayAllNpcs(state.npcs, decision.monthsUntil);
 
-  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, {
+  const recentLog = buildRecentLog(state.log);
+  const knownNpcNames = Object.values(state.npcs).map((npc) => npc.name);
+  const recalledMemories = recallMemories(state.memoryGraph, state.clock.turnIndex);
+
+  const response = await deps.model.runTurn({
+    clock: nextClock,
+    observable: state.observable,
+    trigger: { kind: 'threadScene', thread: decision.thread, event: decision.event },
+    recentLog,
+    recalledMemories,
+    knownNpcNames,
+  });
+
+  const result = commitTurnResponse(
+    state,
+    nextTurnIndex,
+    nextClock,
+    state.memoryGraph,
+    npcsAfterQuietTime,
+    hiddenAfterQuietTime,
+    state.observable,
+    decision.simBoard,
+    undefined,
+    response,
+    deps.language,
+    recalledMemories,
+  );
+  return attachSceneIfNeeded(result, response.entersScene, nextTurnIndex);
+}
+
+/** 모델 호출 없는 평범한 시간 경과 — 클록 전진 + 드리프트 + 템플릿 서사. */
+function runPureSkip(state: GameState, decision: Extract<SkipDecision, { type: 'pureSkip' }>, language: Language): TurnResult {
+  const nextTurnIndex = state.clock.turnIndex + 1;
+  const nextClock = advanceClock(state.clock, nextTurnIndex, decision.months);
+  const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.months, state.clock.lifeStage);
+  const hidden = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
+  const npcs = decayAllNpcs(state.npcs, decision.months);
+
+  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
     kind: 'skip',
-    narrative: getSkipNarrative(months, language),
+    narrative: getSkipNarrative(decision.months, language),
     plausibilityJudgments: [],
   });
 }
 
 /** 모델 호출 없는 급사 — 코드가 원인을 템플릿에서 뽑는다. 문서 원칙("사인+나이만, 부연설명
  *  없음")상 이 편이 LLM이 장황하게 서술하는 것보다 오히려 스펙에 맞는다. */
-function runSuddenDeath(state: GameState, monthsUntil: number, cause: string, language: Language): TurnResult {
+function runSuddenDeath(state: GameState, decision: Extract<SkipDecision, { type: 'suddenDeath' }>, language: Language): TurnResult {
   const nextTurnIndex = state.clock.turnIndex + 1;
-  const nextClock = advanceClock(state.clock, nextTurnIndex, monthsUntil);
-  const hidden = applyHiddenStatDrift(state.hidden, monthsUntil, state.clock.lifeStage);
-  const npcs = decayAllNpcs(state.npcs, monthsUntil);
+  const nextClock = advanceClock(state.clock, nextTurnIndex, decision.monthsUntil);
+  const hiddenAfterDrift = applyHiddenStatDrift(state.hidden, decision.monthsUntil, state.clock.lifeStage);
+  const hidden = syncResourcesIntoHidden(decision.prevSharedResources, decision.simBoard.sharedResources, hiddenAfterDrift);
+  const npcs = decayAllNpcs(state.npcs, decision.monthsUntil);
 
-  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, {
+  return finalizeTurn(state, nextTurnIndex, nextClock, state.memoryGraph, npcs, hidden, state.observable, decision.simBoard, {
     kind: 'skip',
-    narrative: getSkipNarrative(monthsUntil, language),
+    narrative: getSkipNarrative(decision.monthsUntil, language),
     plausibilityJudgments: [],
-    death: { cause },
+    death: { cause: decision.cause },
   });
 }
 
-type SkipDecision =
-  | { type: 'pureSkip'; months: number }
-  | { type: 'suddenDeath'; monthsUntil: number; cause: string }
-  | { type: 'eraEvent'; monthsUntil: number; definition: EraEventDefinition }
-  | { type: 'unpromptedEvent'; monthsUntil: number };
-
 /**
- * "계속하기"(빈 입력) 한 사이클이 뭘로 이어질지 코드가 직접 굴린다 — 예전엔 이 판단 자체가
- * 매번 라우터 호출이었다. 순서: 자격 구간이 열린 시대 이벤트 확인(창이 닫혀갈수록 확률
- * 상승) → 낮은 확률의 돌발 사건 → 나이/건강 기반 급사 확률 → 셋 다 아니면 순수 스킵.
+ * "계속하기"(빈 입력) 한 사이클이 뭘로 이어질지 코드가 직접 굴린다. 순서: 자격 구간이 열린
+ * 시대 이벤트 확인(창이 닫혀갈수록 확률 상승) → 나이/건강 기반 급사 확률 → 실타래 엔진
+ * (simulateUntilScene)을 stretchMonths까지 돌려서 문턱 넘는 장면을 찾거나, 못 찾으면 순수
+ * 스킵. 시대 이벤트/급사가 이겨도 그 monthsUntil 동안 실타래는 조용히 진행된다
+ * (tickThreadsSilently) — "무슨 일이 있었는지"를 코드가 결정한 순간에도 보드 상태 자체는
+ * 계속 흘러야 하므로.
  */
 function decideSkipStretch(state: GameState, language: Language): SkipDecision {
   const stretchMonths = randomInt(MIN_SKIP_STRETCH_MONTHS, MAX_SKIP_STRETCH_MONTHS);
   const occurredEraEventIds = new Set(state.eraEventOccurrences.map((o) => o.definitionId));
   const candidates = getOpenEraEventCandidates(state.clock.date, state.clock.ageYears, occurredEraEventIds);
 
+  const prevSharedResources = seedSharedResourcesFromHidden(state.sharedResources, state.hidden);
+  const seededBoard: SimBoardState = {
+    threads: ensureBaselineThreads(state.threads, state.clock.ageYears, state.clock.turnIndex),
+    sharedResources: prevSharedResources,
+    juxtapositionState: state.juxtapositionState,
+  };
+
   for (const definition of candidates) {
     const remaining = monthsRemainingInEraEventWindow(state.clock.date, state.clock.ageYears, definition);
     if (rollEraEventTrigger(remaining)) {
       const cap = Math.max(0, Math.min(stretchMonths, remaining));
-      return { type: 'eraEvent', definition, monthsUntil: randomInt(0, cap) };
+      const monthsUntil = randomInt(0, cap);
+      const simBoard = tickThreadsSilently(seededBoard, state.clock.date, monthsUntil);
+      return { type: 'eraEvent', definition, monthsUntil, prevSharedResources, simBoard };
     }
-  }
-
-  if (Math.random() < SURPRISE_EVENT_CHANCE) {
-    return { type: 'unpromptedEvent', monthsUntil: randomInt(0, stretchMonths) };
   }
 
   const deathChance = computeSuddenDeathChance(state.clock.ageYears, state.hidden);
   if (Math.random() < deathChance) {
-    return { type: 'suddenDeath', monthsUntil: randomInt(0, stretchMonths), cause: pickRandomSuddenDeathCause(language) };
+    const monthsUntil = randomInt(0, stretchMonths);
+    const simBoard = tickThreadsSilently(seededBoard, state.clock.date, monthsUntil);
+    return { type: 'suddenDeath', monthsUntil, cause: pickRandomSuddenDeathCause(language), prevSharedResources, simBoard };
   }
 
-  return { type: 'pureSkip', months: stretchMonths };
+  const result = simulateUntilScene(
+    seededBoard.threads,
+    seededBoard.sharedResources,
+    state.clock.date,
+    randomPolicy,
+    THREAD_SCENE_SALIENCE_THRESHOLD,
+    seededBoard.juxtapositionState,
+    Math.random,
+    stretchMonths,
+  );
+  const simBoard: SimBoardState = { threads: result.threads, sharedResources: result.resources, juxtapositionState: result.juxtapositionState };
+
+  if (result.scene) {
+    return {
+      type: 'threadScene',
+      monthsUntil: result.monthsElapsed,
+      thread: result.scene.thread,
+      event: result.scene.event,
+      prevSharedResources,
+      simBoard,
+    };
+  }
+  return { type: 'pureSkip', months: result.monthsElapsed, prevSharedResources, simBoard };
 }
 
 export interface SceneExchangeResult {
@@ -550,7 +699,14 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
     wasSceneSignificant,
   );
 
-  const concluded = finalizeTurn(stateWithImpact, nextTurnIndex, nextClock, memoryGraph, npcsAfterEncoding, hiddenAfterDrift, observable, {
+  // 대화형 씬 안에서의 실타래 tick은 범위 밖(8단계 1차) — summary.elapsedMonths는 보통
+  // 0이고(단일 자리 대화), 실타래는 이 씬 동안 그대로 이월된다.
+  const sceneBoard: SimBoardState = {
+    threads: stateWithImpact.threads,
+    sharedResources: stateWithImpact.sharedResources,
+    juxtapositionState: stateWithImpact.juxtapositionState,
+  };
+  const concluded = finalizeTurn(stateWithImpact, nextTurnIndex, nextClock, memoryGraph, npcsAfterEncoding, hiddenAfterDrift, observable, sceneBoard, {
     kind: 'detail',
     narrative: summary.narrative,
     plausibilityJudgments: updatedJudgments,
@@ -571,12 +727,13 @@ export interface AutoAdvanceResult {
  * 플레이어 입력 하나를 처리한다.
  *
  * playerInput이 있으면: 항상 모델 호출 1번(runPlayerAction)으로 끝나고 체이닝하지 않는다 —
- * 플레이어가 뭔가 입력했다면 그 하나의 결과를 보여주고 제어권을 돌려준다.
+ * 플레이어가 뭔가 입력했다면 그 하나의 결과를 보여주고 제어권을 돌려준다. (8단계 1차 기준
+ * 플레이어 입력은 실타래를 직접 건드리지 않는다 — IR 연결은 후속 작업.)
  *
- * playerInput이 없으면("계속하기"): 코드가 매 사이클 시대 이벤트/돌발 사건/급사/순수 스킵
+ * playerInput이 없으면("계속하기"): 코드가 매 사이클 시대 이벤트/급사/실타래 장면/순수 스킵
  * 중 하나를 결정한다(decideSkipStretch). 순수 스킵은 모델 호출이 전혀 없으므로 빠르게
- * 이어지고, 강제 이벤트에 도달하거나 사망하거나 씬에 진입하면(또는 MAX_CHAINED_SKIPS에
- * 도달하면) 멈춰서 제어권을 돌려준다.
+ * 이어지고, 강제 이벤트나 실타래 장면에 도달하거나 사망하거나 씬에 진입하면(또는
+ * MAX_CHAINED_SKIPS에 도달하면) 멈춰서 제어권을 돌려준다.
  */
 export async function advanceUntilInputNeeded(
   state: GameState,
@@ -600,16 +757,16 @@ export async function advanceUntilInputNeeded(
     let result: TurnResult;
     switch (decision.type) {
       case 'pureSkip':
-        result = runPureSkip(current, decision.months, deps.language);
+        result = runPureSkip(current, decision, deps.language);
         break;
       case 'suddenDeath':
-        result = runSuddenDeath(current, decision.monthsUntil, decision.cause, deps.language);
+        result = runSuddenDeath(current, decision, deps.language);
         break;
       case 'eraEvent':
-        result = await runForcedEvent(current, decision.monthsUntil, { kind: 'eraEvent', definition: decision.definition }, deps);
+        result = await runForcedEvent(current, decision, deps);
         break;
-      case 'unpromptedEvent':
-        result = await runForcedEvent(current, decision.monthsUntil, { kind: 'unpromptedEvent' }, deps);
+      case 'threadScene':
+        result = await runThreadScene(current, decision, deps);
         break;
     }
 

@@ -86,8 +86,9 @@ const FATIGUE_DECAY_RATE = 0.15;
  * tickMonth가 끝난 뒤의(post-tick) threads에 피로를 반영한다 — 이번 달 장면으로 뽑힌
  * 실타래는 fatigue가 오르고(같은 실타래가 매번 장면을 독점하지 못하게), 나머지는 시간이
  * 지나며 서서히 식는다. lastSceneAtTurn은 game/의 turnIndex(스킵+디테일 합산 카운터)가
- * 아직 sim/에 없어서 월수(dateToTotalMonths)로 대신한다 — 8단계에서 진짜 turnIndex가
- * 붙으면 재검토할 것.
+ * 아직 sim/에 없어서 월수(dateToTotalMonths)로 대신한다 — 8단계 1차(gameLoop.ts 연결)
+ * 이후에도 그대로다(fatigue 계산 자체는 sim/ 내부 월 단위로 자기완결적이라 당장은 문제
+ * 없음) — 진짜 turnIndex와 합치는 건 여전히 미확정, 필요해지면 재검토할 것.
  */
 export function applyStorytellerFatigue(threads: readonly Thread[], sceneThreadId: string | undefined, currentDate: GameDate): Thread[] {
   const currentMonth = dateToTotalMonths(currentDate);

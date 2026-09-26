@@ -34,5 +34,11 @@ export function createInitialGameState(): GameState {
     memoryGraph: createEmptyMemoryGraph(),
     log: [],
     eraEventOccurrences: [],
+    threads: [],
+    // attentionBudget 3은 sim/threads/types.ts가 스스로 "초안 2~3, 밸런스로 보지 않음"이라고
+    // 표시한 값 그대로(sceneFrequency.ts 하네스도 같은 값을 씀). money/stress는 사이클마다
+    // hidden에서 재시딩되므로 0으로 시작해도 무해하다.
+    sharedResources: { money: 0, stress: 0, attentionBudget: 3 },
+    juxtapositionState: {},
   };
 }

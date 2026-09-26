@@ -85,12 +85,12 @@ export interface PromptPair {
 }
 
 /**
- * 단일 모델의 메인 호출 — 트리거 종류에 따라 지시문이 달라진다:
- * playerAction(플레이어가 직접 입력), eraEvent(코드가 이미 "지금이 그 순간"이라고 정한
- * 시대 이벤트), unpromptedEvent(코드가 낮은 확률로 굴려서 뽑은 돌발 사건 — 구체적 내용은
- * 없고, 모델이 Roy의 상황에 맞게 그럴듯한 사건 하나를 즉석에서 지어내야 함).
- * turnType/elapsedMonths/eraEventTriggered 판단은 전부 코드가 이미 끝냈으므로 스키마에서
- * 아예 빠졌다 — 모델은 "무슨 일이 있었는지"만 쓰면 된다.
+ * 단일 모델의 메인 호출 — 트리거 종류에 따라 지시문이 달라진다: playerAction(플레이어가
+ * 직접 입력), eraEvent(코드가 이미 "지금이 그 순간"이라고 정한 시대 이벤트), threadScene
+ * (8단계(1차) — 실타래 엔진이 매달 결정적으로 진행시키다 현저성 문턱을 넘긴 순간. 낡은
+ * unpromptedEvent(12% 확률의 순수 즉흥)와 달리 어느 실타래가, 왜 지금 눈에 띄었는지 구조화된
+ * 근거가 있다). turnType/elapsedMonths/eraEventTriggered 판단은 전부 코드가 이미 끝냈으므로
+ * 스키마에서 아예 빠졌다 — 모델은 "무슨 일이 있었는지"만 쓰면 된다.
  */
 /**
  * 7단계(LLM 축소)에서 트리거별 지시문(TRIGGER: ...)을 system에서 user로 옮겼다 — system은
@@ -98,14 +98,41 @@ export interface PromptPair {
  * 달라지는 내용은 전부 user 쪽에 몰아서, system이 매번 토씨 하나 안 바뀌는 안정적인 접두부가
  * 되게 한다 — KV 캐시/prefix 재사용의 전제조건).
  */
+
+/** ThreadEventTag(sim/threads/types.ts) -> LLM에게 줄 짧은 영어 힌트. 플레이어에게 보이는
+ *  텍스트가 아니라 프롬프트 컨텍스트일 뿐이라 여기 있는 게 맞다(narrative 자체는 여전히
+ *  모델이 자유롭게 씀). 이벤트 태그가 없는 경우(잔잔한 진행)는 THREAD_EVENT_HINTS 밖에서
+ *  별도 기본 문구로 처리한다. */
+const THREAD_EVENT_HINTS: Record<string, string> = {
+  debtResolved: 'it has finally been paid off/resolved',
+  debtEscalated: 'it just escalated to a worse stage (e.g. collections, legal action)',
+  debtDeescalated: 'consistent effort has eased it back a stage',
+  debtCrisis: 'it has spiraled into a full-blown crisis',
+  decayFizzled: "it's quietly petered out — no longer worth Roy's attention",
+  decayResolved: "it's been brought back to a healthy, stable state",
+  decayCrossedCritical: "it just crossed into a critical, hard-to-reverse state from neglect",
+  pursuitResolved: 'Roy has actually achieved/completed it',
+  pursuitAbandoned: "Roy has quietly given up on it",
+  dormantForcedSurface: 'something hidden about this is forcing its way into the open right now',
+  dormantSignal: 'a small, ambiguous sign of it has just leaked through',
+  dormantFalseSignal: 'something LOOKED like a sign of it, but treat it as a false alarm — nothing is actually confirmed',
+  pressureIgnoredToResolution: 'ignoring it has, unexpectedly, brought it to a resolution',
+  pressureIgnoredToTransform: 'ignoring it has let it curdle into something worse and different',
+  pressureEscalated: 'the deadline/pressure just escalated a notch',
+  transitionArrived: "the fixed date it was always heading toward has arrived",
+};
+
 function turnTriggerInstruction(trigger: TurnRequest['trigger']): string {
   switch (trigger.kind) {
     case 'playerAction':
       return `Roy just did/said this: ${JSON.stringify(trigger.playerInput)}. Write the scene that plays out from this attempt.`;
     case 'eraEvent':
       return `This is precisely the moment Roy experiences a real historical event: "${trigger.definition.label}" (${trigger.definition.eligibilityDescription}). Write how it touches his life right now — this is not something Roy chose, it's happening to/around him.`;
-    case 'unpromptedEvent':
-      return "Nothing was scripted for this moment — invent ONE small, plausible unscripted thing that happens to Roy right now, fitting naturally with his current situation and history (recentLog/recalledMemories). This is not player-initiated; Roy didn't choose it. Keep it mundane-but-real, the kind of thing that just happens in a life (not a dramatic twist).";
+    case 'threadScene': {
+      const hint = trigger.event.event ? THREAD_EVENT_HINTS[trigger.event.event] : undefined;
+      const whatHappened = hint ?? "nothing dramatic has changed, but it's been quietly present enough in the background that it's worth a moment's notice now";
+      return `A long-running thread in Roy's life just became worth noticing: "${trigger.thread.label}" (domain: ${trigger.thread.domain}). How it started: ${trigger.thread.origin}. What's true right now: ${whatHappened}. Write the scene that captures this moment as a natural continuation of this thread — not a random unrelated event.`;
+    }
   }
 }
 
@@ -119,7 +146,7 @@ Decide:
   Only go longer when the moment is genuinely pivotal (a death, a life-altering decision) — never pad an
   ordinary scene to sound more literary.
 - plausibilityJudgment: verdict ('reckless' | 'prepared' | 'neutral' — 'neutral' when this wasn't really an
-  attempt at anything, e.g. most eraEvent/unpromptedEvent moments), citing specific recalledMemories ids
+  attempt at anything, e.g. most eraEvent/threadScene moments), citing specific recalledMemories ids
   that justify it, and successBias for how favorably this should resolve.
 ${OUTCOME_IMPACT_INSTRUCTION}
 - death: only if Roy's life plausibly ends in this exact moment. Otherwise omit it.

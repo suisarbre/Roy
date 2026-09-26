@@ -217,11 +217,13 @@ export type Thread = ThreadBase & ThreadShapeState;
  * 줄어드는 식의 간접 경쟁).
  */
 export interface SharedResources {
-  /** HiddenStats.finance와 어떻게 정확히 동기화될지는 8단계(기존 엔진 흡수)에서 확정 —
-   *  지금은 실타래 레벨에서 "이번 달 투입 가능한 가용 현금"에 가깝다고 가정. */
+  /** HiddenStats.finance와의 동기화는 8단계(1차, gameLoop.ts)에서 결정됨: 별도로 드리프트하는
+   *  진실 소스가 아니라, 매 사이클 시작 시 hidden.finance.netWorth에서 재시딩되고 tick 후
+   *  변화량(delta)만 그쪽에 다시 써넣히는 작업용 스냅샷이다(gameLoop.ts의
+   *  seedSharedResourcesFromHidden/syncResourcesIntoHidden 참고). */
   money: number;
-  /** HiddenStats.mentalHealth와 연결 — 실타래들이 관심을 쏟을 때/방치될 때 이 풀을 갉아먹거나
-   *  회복시킨다. */
+  /** HiddenStats.mentalHealth.stressAccumulation과 같은 방식으로 동기화(위 money 참고) —
+   *  실타래들이 관심을 쏟을 때/방치될 때 이 풀을 갉아먹거나 회복시킨다. */
   stress: number;
   /**
    * 이번 달 Roy가 실타래들에 배분할 수 있는 총 관심 예산. 각 실타래의 tick에 들어가는

@@ -23,6 +23,7 @@
     "src/sim/npc/demo.ts",
     "src/sim/harness/sceneFrequency.ts",
     "src/sim/input/regressionCli.ts",
-    "src/game/memoryExtractionCheck.ts"
+    "src/game/memoryExtractionCheck.ts",
+    "src/game/threadEngineCheck.ts"
   ]
 }

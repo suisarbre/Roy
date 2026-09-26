@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "sim": "tsx src/sim/harness/cli.ts",
     "sim:npc": "tsx src/sim/npc/demo.ts",
-    "sim:scenes": "tsx src/sim/harness/sceneFrequency.ts"
+    "sim:scenes": "tsx src/sim/harness/sceneFrequency.ts",
+    "sim:input": "tsx src/sim/input/regressionCli.ts"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

@@ -18,5 +18,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/sim/harness/cli.ts", "src/sim/npc/demo.ts", "src/sim/harness/sceneFrequency.ts"]
+  "include": ["src/sim/harness/cli.ts", "src/sim/npc/demo.ts", "src/sim/harness/sceneFrequency.ts", "src/sim/input/regressionCli.ts"]
 }

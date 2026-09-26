@@ -1,5 +1,7 @@
 # 결혼 도메인 — 리서치 요약과 행위자 모델 설계 함의
 
+> 구현과 보정 결과: `src/sim/marriage/README.md` (`npm run sim:marriage`).
+
 `marriage.ts`의 적률(calibration moments)을 어떻게 읽고, 행위자 모델을 어떻게 짜야 하는지 정리한 문서.
 숫자와 출처는 전부 `marriage.ts`에 있다.
 

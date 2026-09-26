@@ -25,6 +25,8 @@
     "src/sim/input/regressionCli.ts",
     "src/game/memoryExtractionCheck.ts",
     "src/game/threadEngineCheck.ts",
-    "src/game/npcCheckInCheck.ts"
+    "src/game/npcCheckInCheck.ts",
+    "src/sim/marriage/cli.ts",
+    "src/sim/marriage/calibrate.ts"
   ]
 }

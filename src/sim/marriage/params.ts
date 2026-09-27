@@ -1,11 +1,12 @@
+import type { WomenLaborParams } from '../career/types';
 import type { Education } from './types';
 
 /**
  * 결혼 행위자 모델의 파라미터.
  *
  * 세 부류로 나뉜다:
- * 1. FIXED_ASSUMPTIONS — 결혼 모델 바깥의 세계(실직 발생률, 학력 분포 등). 원래는 일/돈 도메인이
- *    제공해야 할 값이라 지금은 그럴듯한 가정으로 고정하고 README에 표시한다. 보정 대상 아님.
+ * 1. FIXED_ASSUMPTIONS — 결혼 모델 바깥의 세계 중 아직 모델이 없는 것(결혼 나이, 동류혼, 가임력).
+ *    학력 분포·남편의 실직·재취업·장애·아내의 전업 여부는 이제 경력 모델(src/sim/career)이 정한다.
  * 2. 구조 상수(척도 고정) — 만족도 척도, 떠남 곡선 기울기 등. 모델의 "단위"를 정하는 값이라
  *    자유롭게 두면 다른 파라미터와 같은 일을 해서 식별이 안 된다.
  * 3. FREE_PARAMS — 몬테카를로 보정으로 정하는 15개. 적률(17개 수치)보다 적게 유지한다.
@@ -69,6 +70,9 @@ export interface MarriageParams {
   youngChildStrain: number;
   /** 출산 직후 만족도 하락(부부 공유). */
   postBirthDip: number;
+  /** 아내의 일이 출산을 미루는 정도(기회비용): 취업 중인 아내의 로그 임금(AWI 배수) + 0.5 당 출산 준비도 감소.
+   *  대졸 여성의 높은 무자녀 비율의 한 통로. */
+  birthCareerCost: number;
   /** 투자: 결혼 연수 log1p당 헌신 — 세월·자녀·집이 쌓여 떠나기 어려워지는 속도. 해체 시점 분포의 모양. */
   investmentPerLogYear: number;
 }
@@ -108,7 +112,49 @@ export const FREE_PARAMS: readonly FreeParamSpec[] = [
   { name: 'childInvestment', min: 0, max: 2, drives: '자녀의 이혼 억제' },
   { name: 'youngChildStrain', min: 0, max: 1.5, drives: '어린 자녀 양육 스트레스' },
   { name: 'postBirthDip', min: 0, max: 1.5, drives: '출산 후 만족도 하락' },
+  { name: 'birthCareerCost', min: 0, max: 3, drives: '대졸 무자녀(일의 기회비용)' },
 ];
+
+// ---- 여성 노동 공급(경력 모델 위에 얹힘) — 결혼·출산과 함께 보정 ----
+
+export type WomenScalarParams = Omit<WomenLaborParams, 'occupationWeights'>;
+
+export interface WomenParamSpec {
+  name: keyof WomenScalarParams;
+  min: number;
+  max: number;
+  drives: string;
+}
+
+export const WOMEN_FREE_PARAMS: readonly WomenParamSpec[] = [
+  { name: 'payGap', min: -0.5, max: 0.1, drives: '여성/남성 임금 중앙값' },
+  { name: 'homeExitBirth', min: -4, max: 3, drives: '출산 후 이탈(어린 자녀 어머니 참가율)' },
+  { name: 'homeExitTraditionalism', min: 0, max: 2, drives: '전통성과 전업' },
+  { name: 'homeExitCollege', min: 0, max: 3, drives: '대졸 여성의 고용' },
+  { name: 'homeExitSpouseIncome', min: 0, max: 2, drives: '남편 소득과 전업' },
+  { name: 'homeReturnBase', min: -8, max: -1, drives: '복귀 속도' },
+  { name: 'homeReturnChildAge', min: 0, max: 0.6, drives: '자녀가 크면 복귀(6–17세 참가율)' },
+  { name: 'homeReturnTraditionalism', min: 0, max: 2, drives: '전통성과 장기 전업' },
+  { name: 'homeReturnSingle', min: 0, max: 4, drives: '이혼 후 복귀' },
+  { name: 'nilfMultiplier', min: 0.3, max: 8, drives: '여성 비경제활동 수준' },
+  { name: 'nilfLowEducation', min: 1, max: 15, drives: '고졸 미만 여성 비경제활동(학력 기울기)' },
+  { name: 'homeFromUnemployment', min: -8, max: -1, drives: '여성 실업률(실업 → 가사)' },
+];
+
+export const INITIAL_WOMEN_PARAMS: WomenLaborParams = {
+  payGap: -0.15,
+  homeExitBirth: -0.5,
+  homeExitTraditionalism: 0.5,
+  homeExitCollege: 0.8,
+  homeExitSpouseIncome: 0.5,
+  homeReturnBase: -4.5,
+  homeReturnChildAge: 0.2,
+  homeReturnTraditionalism: 0.3,
+  homeReturnSingle: 2,
+  nilfMultiplier: 2,
+  nilfLowEducation: 6,
+  homeFromUnemployment: -3.5,
+};
 
 /** 보정 전 초기값(대략적인 직관). calibratedParams.ts가 있으면 그쪽을 쓴다. */
 export const INITIAL_PARAMS: MarriageParams = {
@@ -137,6 +183,7 @@ export const INITIAL_PARAMS: MarriageParams = {
   childInvestment: 0.3,
   youngChildStrain: 0.2,
   postBirthDip: 0.3,
+  birthCareerCost: 0.3,
 };
 
 // ---- 구조 상수(척도 고정) ----
@@ -209,25 +256,13 @@ export const STRUCTURE = {
 // ---- 결혼 모델 바깥의 가정(보정 대상 아님) ----
 
 export const FIXED_ASSUMPTIONS = {
-  /** NLSY79 남성 최종 학력 분포 — 가정(원문 미확인). */
-  educationShare: { lessThanHighSchool: 0.12, highSchool: 0.4, someCollege: 0.22, bachelorsOrMore: 0.26 } as Record<Education, number>,
   /** 학력별 남성 평균 결혼 나이 — 고졸 미만 24, 대졸 28은 NLSY79 원문, 중간은 보간(가정). */
   meanAgeAtMarriageByEducation: { lessThanHighSchool: 24, highSchool: 25, someCollege: 26, bachelorsOrMore: 28 } as Record<Education, number>,
   ageAtMarriageSd: 3.5,
-  /** 아내 학력이 남편과 같을 확률(동류혼) — 가정. */
+  /** 아내 학력이 남편과 같을 확률(동류혼) — 가정. 아내 후보를 여럿 뽑아 학력이 맞는 사람을 고르는 식으로 구현. */
   educationHomogamy: 0.6,
-  /** 부모 이혼 경험 비율 — 가정. */
-  parentsDivorcedShare: 0.17,
-  /** 1980년대 기혼 여성의 전업주부 비율 — 가정. */
-  homemakerShare: 0.35,
-  /** 남편 월간 해고 확률(학력별) — 가정. */
-  monthlyLayoffByEducation: { lessThanHighSchool: 0.004, highSchool: 0.003, someCollege: 0.0025, bachelorsOrMore: 0.0015 } as Record<Education, number>,
-  monthlyPlantClosing: 0.001,
-  monthlyDisability: 0.0005,
-  /** 실업 → 재취업 월간 확률(평균 약 6.7개월) — 가정. */
-  monthlyReemployment: 0.15,
-  /** 장애 → 복귀 월간 확률(평균 약 4년) — 가정. */
-  monthlyDisabilityRecovery: 0.02,
+  /** 비혼으로 남는 여성 비율 — NLSY79 목표(55세까지 결혼 경험 85%)의 나머지. 여성 노동 적률의 모집단에 섞는다. */
+  neverMarriedWomenShare: 0.15,
   /** 나이별 월간 출산 가능성(가임력 × 임신 유지) — 30세까지 평탄, 이후 선형 감소해 45세에 0.
    *  단순화된 곡선(가정). 실제 월 수태 확률은 20대에 0.2 안팎이지만 여기선 "시도하면 이번 달에
    *  출산으로 이어질" 확률을 뭉뚱그렸다. */
@@ -236,4 +271,7 @@ export const FIXED_ASSUMPTIONS = {
   fecundityEndAge: 45,
   /** 남편 출생연도 범위(NLSY79). */
   husbandBirthYears: [1957, 1964] as const,
+  /** 시나리오(forcedShock) 전용 단순 경로: 실업 → 재취업, 장애 → 복귀 월간 확률. 보정에는 안 쓴다. */
+  scenarioReemployment: 0.15,
+  scenarioDisabilityRecovery: 0.02,
 } as const;

@@ -1,5 +1,5 @@
 import type { PolicyBot } from '../attend';
-import { sigmoid } from '../marriage/population';
+import { sigmoid } from '../stats';
 import type { NpcTemperament } from '../npc/types';
 import type { ThreadDomain } from '../threads/types';
 import type { PersonTraits } from './profile';

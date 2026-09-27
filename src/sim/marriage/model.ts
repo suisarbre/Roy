@@ -1,12 +1,17 @@
+import { createCareerStepper, type CareerStepResult } from '../career/model';
+import type { CareerParams } from '../career/params';
+import type { HouseholdContext, WomenLaborParams } from '../career/types';
 import { monthlyDeathProbability } from '../data';
-import type { Rng } from '../rng';
+import { DEFAULT_CAREER_PARAMS, toWorker } from '../person/profile';
+import { createRng, type Rng } from '../rng';
+import { gaussian, mixSeed, sigmoid } from '../stats';
 import { FIXED_ASSUMPTIONS, STRUCTURE as S, type MarriageParams } from './params';
-import { gaussian, sigmoid } from './population';
 import type {
   Behavior,
   Couple,
   EmploymentState,
   Education,
+  HusbandTrack,
   JobShockKind,
   MarriageEndReason,
   MarriageOutcome,
@@ -19,7 +24,8 @@ import type {
  * 결혼 행위자 모델 — 한 달 루프.
  *
  *   1. 사망/관측 종료 확인
- *   2. 남편 고용 전이(해고·공장 폐쇄·장애·재취업) — 결혼 모델 바깥 세계(가정값)
+ *   2. 남편 고용 — 남편 자신의 경력 궤적(경력 행위자 모델: 해고·공장 폐쇄·장애·그만둠·재취업)을 읽는다.
+ *      아내의 경력은 같은 달에 한 칸 진행한다: 출산하면 떠날 수 있고, 아이가 크거나 이혼하면 돌아온다.
  *   3. 평가: 각자의 금전 스트레스 = 만성 경제 긴장(학력) + 실직 위협(금전 불안·외벌이로 증폭)
  *      + (아내) 해고에 대한 비난(전통성으로 증폭, 공장 폐쇄는 거의 0)
  *   4. 행동: 지지/중립/대립 로짓 선택 — 기질이 효용을 정하고 스트레스는 대립 쪽으로 민다
@@ -89,16 +95,57 @@ export function monthlyFecundity(wifeAge: number): number {
   return peak * (1 - (wifeAge - start) / (end - start));
 }
 
+const SHOCK_KINDS: readonly (JobShockKind | undefined)[] = [undefined, 'layoff', 'plantClosing', 'disability'];
+const EMPLOYMENT_STATES: readonly EmploymentState[] = ['employed', 'unemployed', 'disabled'];
+
+export interface HouseholdInputs {
+  husbandTrack: HusbandTrack;
+  women: WomenLaborParams;
+  careerParams?: CareerParams;
+  /** 이 부부의 운(달마다 (seed, 개월)로 재시작 — 공통 난수). */
+  seed: number;
+}
+
+function stepWife(
+  stepper: ReturnType<typeof createCareerStepper>,
+  ctx: HouseholdContext,
+  onWifeMonth: SimulateOptions['onWifeMonth'],
+): CareerStepResult | undefined {
+  const result = stepper.step(ctx);
+  if (result) onWifeMonth?.(result, ctx.youngestChildAgeMonths);
+  return result;
+}
+
 export function simulateCouple(
   couple: Couple,
   p: MarriageParams,
-  rng: Rng,
+  inputs: HouseholdInputs,
   options: SimulateOptions,
   onMonth?: (record: MonthRecord, couple: Couple) => void,
 ): MarriageOutcome {
   const { husband, wife } = couple;
+  const track = inputs.husbandTrack;
   const keepMonths = options.keepMonths ?? true;
   const months: MonthRecord[] = [];
+  let rng: Rng = createRng(mixSeed(inputs.seed, 0x5eed));
+
+  // ---- 아내의 경력: 16세부터 결혼 전까지 혼자 ----
+  const wifeStepper = createCareerStepper(
+    { ...toWorker(couple.wifeProfile), sex: 'female', traditionalism: couple.wifeProfile.traits.traditionalism },
+    inputs.careerParams ?? DEFAULT_CAREER_PARAMS,
+    createRng(couple.wifeProfile.lifeSeed),
+    { women: inputs.women, untilAge: options.wifeUntilAge ?? 60 },
+  );
+  const wifeBirthTotal = couple.wifeProfile.birthYear * 12 + couple.wifeProfile.birthMonth;
+  const single: HouseholdContext = { married: false, birthThisMonth: false, spouseAnnualEarnings: 0 };
+  let wifeLast: CareerStepResult | undefined;
+  const marriageAgeMonths = couple.marriedAtMonth - wifeBirthTotal;
+  // 결혼 전 달(나이 개월 marriageAgeMonths − 1)까지 굴린다. 결혼 첫 달부터는 부부 루프 안에서 한 칸씩.
+  while ((wifeLast?.ageMonths ?? 16 * 12 - 1) < marriageAgeMonths - 1) {
+    const r = stepWife(wifeStepper, single, options.onWifeMonth);
+    if (!r) break;
+    wifeLast = r;
+  }
 
   let satisfaction = S.SET_POINT + p.honeymoonBoost + gaussian(rng) * S.SATISFACTION_INITIAL_SD;
   let scar = 0;
@@ -106,19 +153,21 @@ export function simulateCouple(
   let lastShock: JobShockKind | undefined;
   let monthsSinceShock: number | undefined;
   let wifeBlame = 0;
+  let husbandEarnings12 = 0;
+  const earningsWindow: number[] = [];
 
-  const householdStrain = chronicStrain(husband.education, p) + (couple.wifeIsHomemaker ? S.SINGLE_INCOME_STRAIN : 0);
+  const baseStrain = chronicStrain(husband.education, p);
   const desired = desiredChildrenFor(couple, p);
   const birthDurations: number[] = [];
   let lastCommitment = 1; // 첫 달의 출산 판단용(신혼은 안정적이라고 본다)
   let wifeDied = false;
   let wifeAgeAtEnd = couple.wifeAgeAtMarriage;
-  const layoffRate = FIXED_ASSUMPTIONS.monthlyLayoffByEducation[husband.education];
 
   let endReason: MarriageEndReason = 'censored';
   let duration = 0;
 
   for (; ; duration++) {
+    rng = createRng(mixSeed(inputs.seed, duration + 1));
     const month = couple.marriedAtMonth + duration;
     const husbandAge = (month - husband.birthYear * 12) / 12;
     const wifeAge = (month - wife.birthYear * 12) / 12;
@@ -136,23 +185,25 @@ export function simulateCouple(
       break;
     }
 
-    // ---- 2. 고용 ----
+    // ---- 2. 남편 고용: 경력 궤적에서 ----
     let shock: JobShockKind | undefined;
-    if (options.forcedShock && options.forcedShock.atDuration === duration) {
-      shock = options.forcedShock.kind;
-    } else if (employment === 'employed' && !options.forcedShock) {
-      const r = rng();
-      if (r < layoffRate) shock = 'layoff';
-      else if (r < layoffRate + FIXED_ASSUMPTIONS.monthlyPlantClosing) shock = 'plantClosing';
-      else if (r < layoffRate + FIXED_ASSUMPTIONS.monthlyPlantClosing + FIXED_ASSUMPTIONS.monthlyDisability) shock = 'disability';
-    } else if (employment === 'unemployed') {
-      if (rng() < FIXED_ASSUMPTIONS.monthlyReemployment) employment = 'employed';
-    } else if (employment === 'disabled') {
-      if (rng() < FIXED_ASSUMPTIONS.monthlyDisabilityRecovery) employment = 'employed';
+    const idx = month - track.startTotalMonth;
+    if (options.forcedShock) {
+      if (options.forcedShock.atDuration === duration) shock = options.forcedShock.kind;
+      else if (employment === 'unemployed' && rng() < FIXED_ASSUMPTIONS.scenarioReemployment) employment = 'employed';
+      else if (employment === 'disabled' && rng() < FIXED_ASSUMPTIONS.scenarioDisabilityRecovery) employment = 'employed';
+      if (shock) employment = shock === 'disability' ? 'disabled' : 'unemployed';
+    } else if (idx >= 0 && idx < track.employment.length) {
+      employment = EMPLOYMENT_STATES[track.employment[idx]];
+      shock = SHOCK_KINDS[track.shock[idx]];
+      earningsWindow.push(track.earnings[idx]);
+      husbandEarnings12 += track.earnings[idx];
+      if (earningsWindow.length > 12) husbandEarnings12 -= earningsWindow.shift()!;
+    } else {
+      employment = 'employed';
     }
 
     if (shock) {
-      employment = shock === 'disability' ? 'disabled' : 'unemployed';
       lastShock = shock;
       monthsSinceShock = 0;
       const blameScale = Math.max(0, 1 + S.BLAME_TRADITIONALISM * wife.traits.traditionalism);
@@ -162,11 +213,16 @@ export function simulateCouple(
       if (employment === 'employed') wifeBlame *= 1 - S.BLAME_DECAY;
     }
 
+    // 아내의 지난달 상태(이번 달 평가에 쓰는 사실).
+    const wifeAtHome = options.forceWifeAtHome ?? (wifeLast?.atHome ?? false);
+    const wifeEmployed = options.forceWifeAtHome !== undefined ? !options.forceWifeAtHome : wifeLast?.state === 'employed' || wifeLast?.state === 'selfEmployed';
+    const householdStrain = baseStrain + (wifeAtHome ? S.SINGLE_INCOME_STRAIN : 0);
+
     // ---- 3. 평가 ----
     const notFullTime = employment !== 'employed';
     const threatScale = employment === 'disabled' ? S.DISABILITY_THREAT_RATIO : 1;
     const wifeThreat = notFullTime
-      ? threatScale * p.jobLossThreat * Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * wife.traits.financialAnxiety) * (couple.wifeIsHomemaker ? S.THREAT_HOMEMAKER_MULTIPLIER : 1)
+      ? threatScale * p.jobLossThreat * Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * wife.traits.financialAnxiety) * (wifeAtHome ? S.THREAT_HOMEMAKER_MULTIPLIER : 1)
       : 0;
     const husbandThreat = notFullTime
       ? threatScale * p.jobLossThreat *
@@ -184,7 +240,10 @@ export function simulateCouple(
     let birthThisMonth = false;
     if (spacingOk) {
       const wanting = children < desired;
-      const readiness = sigmoid(p.birthPace + p.birthCommitment * lastCommitment - p.birthStressAversion * Math.max(0, financialWifeStress));
+      const careerStake = wifeEmployed && wifeLast?.logWage !== undefined ? Math.max(0, wifeLast.logWage + 0.5) : 0;
+      const readiness = sigmoid(
+        p.birthPace + p.birthCommitment * lastCommitment - p.birthStressAversion * Math.max(0, financialWifeStress) - p.birthCareerCost * careerStake,
+      );
       const chance = monthlyFecundity(wifeAge) * (wanting ? readiness : S.UNPLANNED_BIRTH_RATIO);
       if (rng() < chance) {
         birthDurations.push(duration);
@@ -206,6 +265,14 @@ export function simulateCouple(
           : Math.max(S.CHILD_BOND_FLOOR, 1 - ((1 - S.CHILD_BOND_FLOOR) * (age - S.CHILD_BOND_FULL_UNTIL_MONTHS)) / (216 - S.CHILD_BOND_FULL_UNTIL_MONTHS));
     }
     const parentingStrain = p.youngChildStrain * youngChildren;
+
+    // 아내의 경력 한 칸(출산·남편 소득을 보고 떠나거나 돌아온다).
+    wifeLast =
+      stepWife(
+        wifeStepper,
+        { married: true, youngestChildAgeMonths: youngestAge, birthThisMonth, spouseAnnualEarnings: options.forcedShock ? 1 : husbandEarnings12 },
+        options.onWifeMonth,
+      ) ?? wifeLast;
 
     const wifeStress = financialWifeStress + parentingStrain;
     const husbandStress = financialHusbandStress + parentingStrain;
@@ -232,7 +299,7 @@ export function simulateCouple(
     // ---- 6. 헌신 ----
     const investment = p.investmentPerLogYear * Math.log1p(duration / 12) + p.childInvestment * childBond;
     const husbandCommitment = satisfaction + investment - alternatives(husband, husbandAge, p) + barrier(husband, false, p);
-    const wifeCommitment = satisfaction + investment - alternatives(wife, wifeAge, p) + barrier(wife, couple.wifeIsHomemaker, p);
+    const wifeCommitment = satisfaction + investment - alternatives(wife, wifeAge, p) + barrier(wife, wifeAtHome, p);
 
     // ---- 7. 떠남 ----
     lastCommitment = (husbandCommitment + wifeCommitment) / 2;
@@ -243,6 +310,8 @@ export function simulateCouple(
     const record: MonthRecord = {
       duration,
       husbandEmployment: employment,
+      wifeAtHome,
+      wifeEmployed,
       lastShock,
       monthsSinceShock,
       husbandBehavior,
@@ -267,8 +336,47 @@ export function simulateCouple(
     }
   }
 
+  // ---- 결혼이 끝난 뒤 아내의 경력(여성 노동 적률) — 자녀는 아내와 산다고 본다 ----
+  let wifeCareer;
+  if (options.wifeUntilAge !== undefined && !wifeDied) {
+    const lastBirth = birthDurations[birthDurations.length - 1];
+    for (let d = duration; ; d++) {
+      const month = couple.marriedAtMonth + d;
+      const idx = month - track.startTotalMonth;
+      const stillMarried = endReason === 'censored';
+      const ctx: HouseholdContext = {
+        married: stillMarried,
+        youngestChildAgeMonths: lastBirth !== undefined ? d - lastBirth : undefined,
+        birthThisMonth: false,
+        spouseAnnualEarnings: stillMarried && idx >= 0 && idx < track.earnings.length ? track.earnings[idx] * 12 : 0,
+      };
+      const r = stepWife(wifeStepper, ctx, options.onWifeMonth);
+      if (!r) break;
+    }
+    wifeCareer = wifeStepper.finish();
+  }
+
   // 완결 출산 모집단: 아내가 45세까지 산 결혼. 이혼·남편 사망으로 끝난 결혼은 그 뒤 아내가 45세까지
   // 살았다고 본다(결혼 중 출산만 센다). 아내 사망이나 관측 종료가 45세 전에 오면 제외.
   const wifeReached45 = wifeAgeAtEnd >= 45 || endReason === 'divorce' || (endReason === 'widowed' && !wifeDied);
-  return { couple, endReason, durationMonths: duration, months, birthDurations, wifeReached45 };
+  return { couple, endReason, durationMonths: duration, months, birthDurations, wifeReached45, wifeCareer };
+}
+
+/** 비혼 여성의 경력(자녀 없음, 혼자) — 여성 노동 적률의 모집단 일부. */
+export function simulateSingleWoman(
+  profile: Couple['wifeProfile'],
+  women: WomenLaborParams,
+  untilAge: number,
+  careerParams: CareerParams = DEFAULT_CAREER_PARAMS,
+  onWifeMonth?: SimulateOptions['onWifeMonth'],
+) {
+  const stepper = createCareerStepper({ ...toWorker(profile), sex: 'female', traditionalism: profile.traits.traditionalism }, careerParams, createRng(profile.lifeSeed), {
+    women,
+    untilAge,
+  });
+  const ctx: HouseholdContext = { married: false, birthThisMonth: false, spouseAnnualEarnings: 0 };
+  while (stepWife(stepper, ctx, onWifeMonth)) {
+    // 한 달씩.
+  }
+  return stepper.finish();
 }

@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { gaussian } from '../marriage/population';
+import { gaussian } from '../stats';
 import { createRng } from '../rng';
 import { CALIBRATED_CAREER_PARAMS } from './calibratedParams';
 import { buildCareerTargets, careerLoss, measureCareer, measureOccupationShares, OCCUPATION_TARGET_GROUPS, occupationTargets, simulatePopulation } from './moments';

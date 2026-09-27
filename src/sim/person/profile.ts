@@ -4,7 +4,7 @@ import { CAREER_STRUCTURE, INITIAL_CAREER_PARAMS, type CareerParams } from '../c
 import { buildWorker, drawWorker, inverseNormal } from '../career/population';
 import type { Education, Worker } from '../career/types';
 import type { Sex } from '../data';
-import { gaussian } from '../marriage/population';
+import { gaussian } from '../stats';
 import type { Spouse } from '../marriage/types';
 import { createRng } from '../rng';
 
@@ -62,6 +62,8 @@ export interface SampleProfileOptions {
   /** 부분 지정 — 시나리오용(예: Linda의 금전 불안을 높게). 지정 안 한 값은 뽑는다. */
   traits?: Partial<PersonTraits>;
   parentRank?: number;
+  /** 시나리오용: 학력을 고정(졸업 나이도 그 학력의 보통 나이로). */
+  forceEducation?: Education;
 }
 
 /**
@@ -72,7 +74,8 @@ export interface SampleProfileOptions {
  */
 export function sampleProfile(seed: number, options: SampleProfileOptions, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): PersonProfile {
   const rng = createRng(seed);
-  const draw = drawWorker(rng, [options.birthYear, options.birthYear], options.losAngeles ?? true);
+  // losAngeles를 안 주면 전국 표본(LA 3.5%)으로 뽑는다. 게임 NPC는 Roy의 동네라 true를 준다.
+  const draw = drawWorker(rng, [options.birthYear, options.birthYear], options.losAngeles);
   draw.birthMonth = 0;
   if (options.parentRank !== undefined) draw.parentRank = options.parentRank;
   const financialAnxiety = gaussian(rng);
@@ -90,7 +93,16 @@ export function sampleProfile(seed: number, options: SampleProfileOptions, caree
     const parentZ = inverseNormal(draw.parentRank);
     draw.abilityNoise = (override.ability - rho * parentZ) / Math.sqrt(1 - rho * rho);
   }
-  const worker = buildWorker(draw, careerParams);
+  const built = buildWorker(draw, careerParams);
+  const worker = options.forceEducation
+    ? {
+        ...built,
+        education: options.forceEducation,
+        schooling: options.forceEducation,
+        degree: undefined,
+        schoolExitAge: CAREER_STRUCTURE.schoolExitAge[options.forceEducation],
+      }
+    : built;
 
   return {
     sex: options.sex,

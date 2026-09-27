@@ -29,6 +29,10 @@ export interface WorkerTraits {
 }
 
 export interface Worker {
+  /** 기본 남성. 여성은 가구 상황(HouseholdContext)에 따라 가사·육아로 노동시장을 떠나고 돌아온다. */
+  sex?: 'male' | 'female';
+  /** 생계부양자·가족 규범에 대한 믿음(z) — 여성의 출산 후 이탈·복귀에 쓴다. */
+  traditionalism?: number;
   birthYear: number;
   /** 생일 달(0~11). */
   birthMonth: number;
@@ -49,7 +53,7 @@ export interface Worker {
 
 export type LaborState = 'student' | 'employed' | 'selfEmployed' | 'unemployed' | 'outOfLaborForce' | 'retired';
 
-export type SeparationReason = 'quit' | 'jobToJob' | 'layoff' | 'plantClosing' | 'disability' | 'retirement' | 'termEnd' | 'schoolExit' | 'businessStart';
+export type SeparationReason = 'family' | 'quit' | 'jobToJob' | 'layoff' | 'plantClosing' | 'disability' | 'retirement' | 'termEnd' | 'schoolExit' | 'businessStart';
 
 export interface JobSpell {
   employerId: number;
@@ -124,7 +128,9 @@ export type CareerEventKind =
   | 'leftLaborForce'
   | 'businessStarted'
   | 'businessClosed'
-  | 'retired';
+  | 'retired'
+  | 'leftForFamily'
+  | 'returnedToWork';
 
 export interface MonthTrace {
   ageMonths: number;
@@ -138,7 +144,49 @@ export interface MonthTrace {
   eventKind?: CareerEventKind;
 }
 
+/** 가구 상황 — 결혼 모델이 매달 넘긴다. */
+export interface HouseholdContext {
+  married: boolean;
+  /** 막내 나이(개월). 자녀가 없으면 undefined. */
+  youngestChildAgeMonths?: number;
+  birthThisMonth: boolean;
+  /** 배우자의 최근 연소득(AWI 배수). */
+  spouseAnnualEarnings: number;
+}
+
+/**
+ * 여성 노동 공급 파라미터 — 결혼·출산과 함께 보정된다(src/sim/life). 남성 경력 파라미터 위에 얹힌다.
+ */
+export interface WomenLaborParams {
+  /** 여성 임금 로그 할인(직업 분리로 설명되지 않는 몫). */
+  payGap: number;
+  /** 출산한 달 노동시장을 떠날 로짓 절편. */
+  homeExitBirth: number;
+  homeExitTraditionalism: number;
+  /** 대졸 이상은 덜 떠난다(기회비용). */
+  homeExitCollege: number;
+  /** 배우자 소득이 본인 임금보다 클수록 떠난다(로그 비당). */
+  homeExitSpouseIncome: number;
+  /** 가사 중 월간 복귀 로짓 절편. */
+  homeReturnBase: number;
+  /** 막내 나이 1년당 복귀 로짓 증가. */
+  homeReturnChildAge: number;
+  homeReturnTraditionalism: number;
+  /** 결혼하지 않은(이혼한) 여성의 복귀 로짓 가산 — 생계 필요. */
+  homeReturnSingle: number;
+  /** 실업 → 비경제활동 배수(여성). */
+  nilfMultiplier: number;
+  /** 여성의 고졸 미만 이탈 배수(남성의 nilfLowEducation 대신; 고졸은 제곱근). */
+  nilfLowEducation: number;
+  /** 결혼한 여성이 실업 중 구직을 접고 가사로 가는 월간 로짓 절편(배우자 소득·전통성·학력 효과는 출산 이탈과 공유). */
+  homeFromUnemployment: number;
+  /** 여성 직업별 제안 가중치(CPS 1999 여성 분포에 비례 조정). */
+  occupationWeights?: Partial<Record<string, number>>;
+}
+
 export interface SimulateCareerOptions {
+  /** 여성이면 필요. */
+  women?: WomenLaborParams;
   /** 이 나이(년)까지 시뮬레이션. 기본 72. */
   untilAge?: number;
   keepMonths?: boolean;

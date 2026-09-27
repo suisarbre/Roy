@@ -1,9 +1,9 @@
 import { averageAnnualWageAt, cpiAt, unemploymentRateAt } from '../data';
 import { createRng, type Rng } from '../rng';
-import { gaussian } from '../marriage/population';
+import { gaussian, mixSeed } from '../stats';
 import { OCCUPATIONS, OCCUPATION_BY_ID, SCHOOLING_RANK, STUDENT_JOBS, type Occupation, type OccupationId } from './occupations';
 import { CAREER_STRUCTURE as S, type CareerParams } from './params';
-import type { BusinessSpell, CareerEventKind, CareerOutcome, JobSpell, LaborState, MonthTrace, SeparationReason, SimulateCareerOptions, Worker, YearRecord } from './types';
+import type { BusinessSpell, CareerEventKind, CareerOutcome, HouseholdContext, JobSpell, LaborState, MonthTrace, SeparationReason, SimulateCareerOptions, Worker, YearRecord } from './types';
 
 /**
  * 한 사람의 16세~은퇴 후까지를 월 단위로 굴린다. 확률표는 없다 — 사건은 전부 개인 상태(능력·성격·
@@ -113,13 +113,6 @@ interface Job {
   aerospace: boolean;
 }
 
-/** 두 정수를 섞는 해시(splitmix32식). 달마다 난수열을 새로 시작하는 데 쓴다. */
-function mixSeed(a: number, b: number): number {
-  let h = (a ^ Math.imul(b + 0x9e3779b9, 0x85ebca6b)) >>> 0;
-  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return (h ^ (h >>> 16)) >>> 0;
-}
 
 /** 학력별 기술 프리미엄 추세의 가중치(고졸 = 0). */
 const SKILL_TREND_WEIGHT: Record<Worker['schooling'], number> = {
@@ -138,6 +131,41 @@ const SKILL_TREND_WEIGHT: Record<Worker['schooling'], number> = {
  * 일이 없어 보정의 목적 함수가 훨씬 매끄럽다(실제로 친화성 임금 효과가 잡음에 묻혀 보정되지 않던 문제).
  */
 export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, options: SimulateCareerOptions = {}): CareerOutcome {
+  const stepper = createCareerStepper(worker, p, seedRng, options);
+  while (stepper.step()) {
+    // 한 달씩.
+  }
+  return stepper.finish();
+}
+
+/** 한 달 진행 결과 — 가구(결혼 모델)가 매달 읽는 값. */
+export interface CareerStepResult {
+  ageMonths: number;
+  year: number;
+  state: LaborState;
+  /** 가사·육아로 노동시장 밖(여성의 출산 후 이탈 등). */
+  atHome: boolean;
+  /** 장애로 노동시장 밖. */
+  disabled: boolean;
+  occupation?: OccupationId;
+  /** 임금근로 중이면 로그 임금(AWI 배수). */
+  logWage?: number;
+  /** 이번 달 소득(AWI 배수, 월). */
+  earnings: number;
+  eventKind?: CareerEventKind;
+}
+
+export interface CareerStepper {
+  /** 한 달 진행. 끝났으면 undefined. ctx는 가구 상황(결혼·자녀·배우자 소득) — 여성의 노동 공급이 읽는다. */
+  step(ctx?: HouseholdContext): CareerStepResult | undefined;
+  finish(): CareerOutcome;
+}
+
+/**
+ * 월 단위로 밖에서 굴릴 수 있는 경력. 결혼 모델이 매달 부부를 한 칸씩 진행시키며 출산·결혼 상태를
+ * 아내의 경력에 넘기고(출산 후 이탈, 아이가 크면 복귀), 남편의 실직을 결혼 쪽 스트레스로 받는다.
+ */
+export function createCareerStepper(worker: Worker, p: CareerParams, seedRng: Rng, options: SimulateCareerOptions = {}): CareerStepper {
   const baseSeed = Math.floor(seedRng() * 4294967296);
   let rng: Rng = createRng(baseSeed);
   const untilAge = options.untilAge ?? 72;
@@ -147,7 +175,13 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
   let experienceYears = 0;
   let perm = 0;
 
-  const staticWeights = OCCUPATIONS.map((occ) => staticOfferWeight(worker, occ) * (p.occupationWeights?.[occ.id] ?? 1));
+  const female = worker.sex === 'female';
+  const women = options.women;
+  if (female && !women) throw new Error('여성 경력에는 options.women(WomenLaborParams)이 필요하다');
+  const traditionalism = worker.traditionalism ?? 0;
+  const staticWeights = OCCUPATIONS.map(
+    (occ) => staticOfferWeight(worker, occ) * ((female ? women!.occupationWeights?.[occ.id] : undefined) ?? p.occupationWeights?.[occ.id] ?? 1),
+  );
   const skillTrend = p.skillPremiumTrend * SKILL_TREND_WEIGHT[worker.schooling];
   let currentYear = worker.birthYear + 16;
   const fitPay = new Map(OCCUPATIONS.map((occ) => [occ.id, S.fitPay * fitScore(worker, occ)]));
@@ -156,7 +190,8 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
     S.conscientiousnessPay * t.conscientiousness +
     S.neuroticismPay * t.neuroticism +
     S.opennessPay * t.openness +
-    (worker.schooling === 'masters' ? S.mastersPremium : 0);
+    (worker.schooling === 'masters' ? S.mastersPremium : 0) +
+    (female ? women!.payGap : 0);
   const logMedian = Math.log(S.MEN_MEDIAN_TO_AWI);
 
   const years: YearRecord[] = [];
@@ -173,6 +208,8 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
   let lastLogWage = Math.log(0.4);
   let monthsUnemployed = 0;
   let disabled = false;
+  /** 가사·육아로 노동시장 밖(여성). */
+  let atHome = false;
   let uiMonthsLeft = 0;
   let uiMonthly = 0;
   let employerCounter = 0;
@@ -275,7 +312,12 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
   let record: YearRecord | undefined;
   const careerEarnings: number[] = [];
 
-  for (let ageMonths = startAgeMonths; ageMonths < untilAge * 12; ageMonths++) {
+  let ageMonths = startAgeMonths - 1;
+  let ctx: HouseholdContext | undefined;
+  let monthEarnings = 0;
+  let lastEventKind: CareerEventKind | undefined;
+
+  const stepBody = (): void => {
     const total = worker.birthYear * 12 + worker.birthMonth + ageMonths;
     const year = Math.floor(total / 12);
     currentYear = year;
@@ -319,7 +361,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         if (job) endJob(ageMonths, 'schoolExit');
         event = '학교를 마침'; eventKind = 'schoolExit';
         const militaryEligible = worker.education === 'highSchool' || worker.education === 'someCollege';
-        if (militaryEligible && rng() < S.militaryEnlistShare) {
+        if (!female && militaryEligible && rng() < S.militaryEnlistShare) {
           startJob(OCCUPATION_BY_ID.military, 0, 0, ageMonths, false);
           event = '입대'; eventKind = 'enlisted';
         } else {
@@ -341,7 +383,8 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         }
         if (months) months.push({ ageMonths, year, month: total % 12, state: 'student', occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth, event, eventKind });
         if (ageMonths % 12 === 11) annualMoney(rec, year, age, true);
-        continue;
+        lastEventKind = eventKind;
+        return;
       }
     }
 
@@ -356,6 +399,22 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         const avg = positive.length ? positive.reduce((a, b) => a + b, 0) / Math.max(35, positive.length) : 0;
         socialSecurityMonthly = Math.min(1, S.socialSecurityReplacement * avg) / 12;
         event = '은퇴'; eventKind = 'retired';
+      }
+    }
+
+    // ---- 출산: 여성은 노동시장을 떠날 수 있다(출산 한 달 기준 결정) ----
+    if (female && ctx?.birthThisMonth && (state === 'employed' || state === 'unemployed')) {
+      const own = state === 'employed' && job ? currentWage() : lastLogWage;
+      const logit =
+        women!.homeExitBirth +
+        women!.homeExitTraditionalism * traditionalism -
+        women!.homeExitCollege * (SCHOOLING_RANK[worker.schooling] >= 3 ? 1 : 0) +
+        women!.homeExitSpouseIncome * Math.log((ctx.spouseAnnualEarnings + 0.05) / (Math.exp(own) + 0.05));
+      if (rng() < 1 / (1 + Math.exp(-logit))) {
+        if (job) endJob(ageMonths, 'family');
+        state = 'outOfLaborForce';
+        atHome = true;
+        event = '가사·육아로 일을 쉼'; eventKind = 'leftForFamily';
       }
     }
 
@@ -484,11 +543,24 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
       }
     } else if (state === 'unemployed') {
       monthsUnemployed += 1;
-      const lowEdu = worker.education === 'lessThanHighSchool' ? p.nilfLowEducation : worker.education === 'highSchool' ? Math.sqrt(p.nilfLowEducation) : 1;
+      const nilfLow = female ? women!.nilfLowEducation : p.nilfLowEducation;
+      const lowEdu = worker.education === 'lessThanHighSchool' ? nilfLow : worker.education === 'highSchool' ? Math.sqrt(nilfLow) : 1;
       const network = 0.15 * t.extraversion + (age < 30 ? 0.4 * (worker.parentRank - 0.5) : 0);
       const firstJob = !lastOccupation;
       const offerRate = Math.min(0.95, p.offerRateUnemployed * (S.UNEMPLOYMENT_REFERENCE / u) * Math.exp(network));
-      if (rng() < p.nilfEntry * lowEdu * Math.exp(-0.3 * t.conscientiousness)) {
+      const homeLogit =
+        female && ctx?.married
+          ? women!.homeFromUnemployment +
+            women!.homeExitTraditionalism * traditionalism -
+            women!.homeExitCollege * (SCHOOLING_RANK[worker.schooling] >= 3 ? 1 : 0) +
+            women!.homeExitSpouseIncome * Math.log((ctx.spouseAnnualEarnings + 0.05) / (Math.exp(lastLogWage) + 0.05))
+          : undefined;
+      if (homeLogit !== undefined && rng() < 1 / (1 + Math.exp(-homeLogit))) {
+        // 결혼한 여성: 일자리를 잃으면 구직 대신 가사로(배우자 소득이 클수록) — 여성 실업률이 낮은 이유의 하나.
+        state = 'outOfLaborForce';
+        atHome = true;
+        event = '구직을 접고 가사로'; eventKind = 'leftForFamily';
+      } else if (rng() < p.nilfEntry * lowEdu * (female ? women!.nilfMultiplier : 1) * Math.exp(-0.3 * t.conscientiousness)) {
         state = 'outOfLaborForce';
         event = '구직 단념'; eventKind = 'leftLaborForce';
       } else if (rng() < offerRate) {
@@ -506,6 +578,16 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
             event = `취업: ${occ.label}`; eventKind = 'hired';
           }
         }
+      }
+    } else if (state === 'outOfLaborForce' && atHome) {
+      const youngestYears = ctx?.youngestChildAgeMonths !== undefined ? Math.min(18, ctx.youngestChildAgeMonths / 12) : 18;
+      const logit =
+        women!.homeReturnBase + women!.homeReturnChildAge * youngestYears - women!.homeReturnTraditionalism * traditionalism + (ctx?.married ? 0 : women!.homeReturnSingle);
+      if (rng() < 1 / (1 + Math.exp(-logit))) {
+        state = 'unemployed';
+        atHome = false;
+        monthsUnemployed = 0;
+        event = '다시 일을 찾기 시작'; eventKind = 'returnedToWork';
       }
     } else if (state === 'outOfLaborForce') {
       const exit = disabled ? S.disabilityRecovery : p.nilfExit;
@@ -547,9 +629,32 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
       annualMoney(rec, year, age, false);
       if (age >= 22 && age < 62) careerEarnings.push(rec.earnings);
     }
-  }
+    lastEventKind = eventKind;
+  };
 
-  return { worker, years, jobs, businesses, unemploymentAtSchoolExit, months };
+  return {
+    step(householdContext?: HouseholdContext): CareerStepResult | undefined {
+      if (ageMonths + 1 >= untilAge * 12) return undefined;
+      ageMonths += 1;
+      ctx = householdContext;
+      const earningsBefore = record?.earnings ?? 0;
+      const ageYearBefore = record?.age;
+      stepBody();
+      monthEarnings = record!.age === ageYearBefore ? record!.earnings - earningsBefore : record!.earnings;
+      return {
+        ageMonths,
+        year: record!.year,
+        state,
+        atHome,
+        disabled,
+        occupation: job?.occupation.id,
+        logWage: job && !job.student ? currentWage() : undefined,
+        earnings: monthEarnings,
+        eventKind: lastEventKind,
+      };
+    },
+    finish: () => ({ worker, years, jobs, businesses, unemploymentAtSchoolExit, months }),
+  };
 
   function accumulateHumanCapital(age: number): void {
     hc += (growth / 12) * Math.exp(-p.hcDecay * experienceYears);

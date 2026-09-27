@@ -1,90 +1,103 @@
-import type { Rng } from '../rng';
+import { createCareerStepper } from '../career/model';
+import type { CareerParams } from '../career/params';
+import { DEFAULT_CAREER_PARAMS, sampleProfile, toSpouse, toWorker, type PersonProfile } from '../person/profile';
+import { createRng, type Rng } from '../rng';
+import { gaussian } from '../stats';
 import { FIXED_ASSUMPTIONS } from './params';
-import { EDUCATIONS, type Couple, type Education, type Spouse, type Traits } from './types';
+import type { Couple, HusbandTrack } from './types';
 
-/** 표준정규 난수(Box–Muller). */
-export function gaussian(rng: Rng): number {
-  let u = 0;
-  while (u === 0) u = rng();
-  const v = rng();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-export function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-
-function logit(p: number): number {
-  return Math.log(p / (1 - p));
-}
+export { gaussian, sigmoid } from '../stats';
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
-function sampleEducation(rng: Rng): Education {
-  let roll = rng();
-  for (const education of EDUCATIONS) {
-    roll -= FIXED_ASSUMPTIONS.educationShare[education];
-    if (roll <= 0) return education;
-  }
-  return 'bachelorsOrMore';
-}
-
-export function sampleTraits(rng: Rng): Traits {
-  return {
-    neuroticism: gaussian(rng),
-    conscientiousness: gaussian(rng),
-    agreeableness: gaussian(rng),
-    openness: gaussian(rng),
-    financialAnxiety: gaussian(rng),
-    traditionalism: gaussian(rng),
-  };
+function nextSeed(rng: Rng): number {
+  return Math.floor(rng() * 4294967296);
 }
 
 /**
- * NLSY79 코호트(1957–64년생) 남성과 그 배우자로 이뤄진 첫 결혼 하나를 뽑는다. 배우자 간 기질
- * 상관(동류혼)은 무시한다(가정). 전부 couple 전용 rng에서 뽑아서 파라미터가 바뀌어도 같은 시드면
- * 같은 부부가 나온다(공통 난수 — 보정의 매끄러움에 중요).
+ * NLSY79 코호트(1957–64년생) 남성과 그 아내의 첫 결혼 하나. 두 사람은 sim/person 프로필 — 학력은
+ * 경력 모델의 교육 잠재변수(능력·집안·성실성·개방성)에서 나오고, 기질은 경력과 결혼이 같이 본다.
+ *
+ * 동류혼(가정 0.6): 아내 후보를 최대 8명 뽑아 학력이 남편과 같은 첫 사람을 고른다 — 학력을 덮어쓰지
+ * 않으므로 아내의 능력·집안과 학력의 관계가 유지된다.
+ *
+ * 전부 한 rng에서 뽑으므로 같은 시드는 같은 부부다(공통 난수). 학력 절단점이 eduParentWeight에
+ * 달려 있어 경력 파라미터가 바뀌면 부부도 바뀐다 — 결혼 보정 동안 경력 파라미터는 고정이다.
  */
-export function sampleCouple(rng: Rng): Couple {
+export function sampleHousehold(rng: Rng, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): Couple {
   const [minYear, maxYear] = FIXED_ASSUMPTIONS.husbandBirthYears;
   const husbandBirthYear = minYear + Math.floor(rng() * (maxYear - minYear + 1));
-  const husbandEducation = sampleEducation(rng);
-  const wifeEducation = rng() < FIXED_ASSUMPTIONS.educationHomogamy ? husbandEducation : sampleEducation(rng);
+  const husbandProfile = sampleProfile(nextSeed(rng), { sex: 'male', birthYear: husbandBirthYear }, careerParams);
 
   const husbandAgeAtMarriage = clamp(
-    FIXED_ASSUMPTIONS.meanAgeAtMarriageByEducation[husbandEducation] + gaussian(rng) * FIXED_ASSUMPTIONS.ageAtMarriageSd,
+    FIXED_ASSUMPTIONS.meanAgeAtMarriageByEducation[husbandProfile.education] + gaussian(rng) * FIXED_ASSUMPTIONS.ageAtMarriageSd,
     18,
     45,
   );
   const wifeAgeAtMarriage = clamp(husbandAgeAtMarriage - 2 + gaussian(rng) * 2, 17, 45);
-
   const marriedAtMonth = husbandBirthYear * 12 + Math.round(husbandAgeAtMarriage * 12);
   const wifeBirthYear = Math.floor(marriedAtMonth / 12 - wifeAgeAtMarriage);
 
-  const husband: Spouse = {
-    sex: 'male',
-    birthYear: husbandBirthYear,
-    education: husbandEducation,
-    traits: sampleTraits(rng),
-    parentsDivorced: rng() < FIXED_ASSUMPTIONS.parentsDivorcedShare,
-  };
-  const wife: Spouse = {
-    sex: 'female',
-    birthYear: wifeBirthYear,
-    education: wifeEducation,
-    traits: sampleTraits(rng),
-    parentsDivorced: rng() < FIXED_ASSUMPTIONS.parentsDivorcedShare,
-  };
-
-  // 전업주부는 전통성이 높을수록, 대졸일수록 덜(가정). 평균 비율은 homemakerShare 근처.
-  const homemakerLogit = logit(FIXED_ASSUMPTIONS.homemakerShare) + 0.5 * wife.traits.traditionalism - 0.5 * (wifeEducation === 'bachelorsOrMore' ? 1 : 0);
-  const wifeIsHomemaker = rng() < sigmoid(homemakerLogit);
-
-  // 희망 자녀 수: 모델 파라미터(desireBase 등)에 의존하므로 여기선 표준정규 잡음만 뽑아 두고,
-  // 실제 값은 model.ts의 desiredChildrenFor가 파라미터와 합쳐 계산한다(공통 난수 유지).
+  const wantSameEducation = rng() < FIXED_ASSUMPTIONS.educationHomogamy;
+  let wifeProfile: PersonProfile | undefined;
+  for (let k = 0; k < 8; k++) {
+    const candidate = sampleProfile(nextSeed(rng), { sex: 'female', birthYear: wifeBirthYear }, careerParams);
+    if (!wifeProfile) wifeProfile = candidate;
+    if (!wantSameEducation) break;
+    if (candidate.education === husbandProfile.education) {
+      wifeProfile = candidate;
+      break;
+    }
+  }
   const desiredChildren = gaussian(rng);
 
-  return { husband, wife, marriedAtMonth, husbandAgeAtMarriage, wifeAgeAtMarriage, wifeIsHomemaker, desiredChildren };
+  return {
+    husband: toSpouse(husbandProfile),
+    wife: toSpouse(wifeProfile!),
+    husbandProfile,
+    wifeProfile: wifeProfile!,
+    marriedAtMonth,
+    husbandAgeAtMarriage,
+    wifeAgeAtMarriage: (marriedAtMonth - wifeBirthYear * 12) / 12,
+    desiredChildren,
+  };
+}
+
+/** 비혼 여성(여성 노동 적률의 모집단 일부). */
+export function sampleSingleWoman(rng: Rng, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): PersonProfile {
+  const [minYear, maxYear] = FIXED_ASSUMPTIONS.husbandBirthYears;
+  const birthYear = minYear + Math.floor(rng() * (maxYear - minYear + 1));
+  return sampleProfile(nextSeed(rng), { sex: 'female', birthYear }, careerParams);
+}
+
+/** 남편의 경력을 16~60세까지 굴려 결혼 모델이 읽는 압축 궤적으로. 결혼과 무관하므로 보정 내내 재사용. */
+export function buildHusbandTrack(profile: PersonProfile, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): HusbandTrack {
+  const stepper = createCareerStepper(toWorker(profile), careerParams, createRng(profile.lifeSeed), { untilAge: 60 });
+  const months = (60 - 16) * 12;
+  const employment = new Uint8Array(months);
+  const shock = new Uint8Array(months);
+  const earnings = new Float32Array(months);
+  let i = 0;
+  for (let r = stepper.step(); r && i < months; r = stepper.step(), i++) {
+    const out = r.state === 'unemployed' || (r.state === 'outOfLaborForce' && !r.disabled);
+    employment[i] = r.disabled ? 2 : out ? 1 : 0;
+    shock[i] = r.eventKind === 'laidOff' ? 1 : r.eventKind === 'plantClosing' ? 2 : r.eventKind === 'disabled' ? 3 : 0;
+    earnings[i] = r.earnings;
+  }
+  const outcome = stepper.finish();
+  const wages: number[] = [];
+  for (const y of outcome.years) {
+    if (y && y.age >= 18 && y.age <= 64 && y.occupationAtBirthday && y.occupationAtBirthday !== 'military' && Number.isFinite(y.logWageAtBirthday)) {
+      wages.push(Math.exp(y.logWageAtBirthday));
+    }
+  }
+  return {
+    startTotalMonth: profile.birthYear * 12 + profile.birthMonth + 16 * 12,
+    employment,
+    shock,
+    earnings,
+    birthdayWages: Float32Array.from(wages),
+  };
 }

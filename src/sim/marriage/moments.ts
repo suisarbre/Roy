@@ -1,9 +1,14 @@
-import { FERTILITY_MOMENTS, MARRIAGE_MOMENTS } from '../data';
+import type { CareerStepResult } from '../career/model';
+import { OCCUPATION_TARGET_GROUPS } from '../career/moments';
+import type { CareerOutcome, WomenLaborParams } from '../career/types';
+import { FERTILITY_MOMENTS, MARRIAGE_MOMENTS, WOMEN_WORK_MOMENTS } from '../data';
+import { realAwiGrowth } from '../career/model';
+import type { PersonProfile } from '../person/profile';
 import { createRng } from '../rng';
-import { simulateCouple } from './model';
-import type { MarriageParams } from './params';
-import { sampleCouple } from './population';
-import { EDUCATIONS, type Couple, type Education, type JobShockKind, type MonthRecord, type SimulateOptions } from './types';
+import { simulateCouple, simulateSingleWoman } from './model';
+import { FIXED_ASSUMPTIONS, type MarriageParams } from './params';
+import { buildHusbandTrack, sampleHousehold, sampleSingleWoman } from './population';
+import { EDUCATIONS, type Couple, type Education, type HusbandTrack, type JobShockKind, type MonthRecord, type SimulateOptions } from './types';
 
 /**
  * 몬테카를로 결과에서 보정 적률을 계산하고 목표(src/sim/data/marriage.ts)와 비교한다.
@@ -23,13 +28,17 @@ import { EDUCATIONS, type Couple, type Education, type JobShockKind, type MonthR
  *   시점부터 아내 45세·결혼 종료까지의 출산 수를, 실직을 겪지 않은 부부의 같은 조건(아내 학력 × 그
  *   시점 자녀 수 × 아내 나이대) 기준점 이후 출산 수와 비교. "평생 실직 여부"로 나누면 오래 결혼한
  *   부부가 실직도 출산도 많이 겪는 노출 기간 편향으로 +0.66이 나왔다(실제로 겪음).
+ * - 전업주부 위험비: 아내가 그 달 가사·육아로 노동시장 밖인 개월 대 취업 중인 개월(층별 SMR). 이제 전업
+ *   여부는 결혼 때 고정이 아니라 출산·자녀 나이·이혼에 따라 오가는 아내의 경력 상태다.
+ * - 여성 노동: 아내(결혼 전·중·후, 58세까지)와 비혼 여성(15%)을 합친 월 단위 고용 상태, 연속 생일 임금
+ *   성장, 임금 중앙값(남편들과의 비), 1985–95년 막내 나이별 어머니 경제활동 참가율.
  */
 
 const MAX_DURATION_MONTHS = 12 * 60;
 const SHOCK_WINDOW_MONTHS = 36;
 
 function momentValues(id: string): Readonly<Record<string, number>> {
-  const moment = [...MARRIAGE_MOMENTS, ...FERTILITY_MOMENTS].find((m) => m.id === id);
+  const moment = [...MARRIAGE_MOMENTS, ...FERTILITY_MOMENTS, ...WOMEN_WORK_MOMENTS].find((m) => m.id === id);
   if (!moment) throw new Error(`moment ${id} not found`);
   return moment.values;
 }
@@ -108,7 +117,155 @@ export function buildTargets(): Target[] {
     { key: 'childless_bachelorsOrMore', label: '무자녀 — 대졸 이상(아내)', target: fertEdu.childless_bachelorsOrMore, tolerance: 0.05 },
     { key: 'postBirthSatisfaction', label: '첫 출산 후 1년 만족도 순변화(SD)', target: netDip, tolerance: 0.07 },
     { key: 'displacementFertility', label: '남편 실직 후 완결 출산 변화(명)', target: displaced.completedFertilityChange, tolerance: 0.12 },
+    ...buildWomenTargets(),
   ];
+}
+
+const AGE_BANDS: readonly { key: string; from: number; to: number }[] = [
+  { key: '18to24', from: 18, to: 24 },
+  { key: '25to34', from: 25, to: 34 },
+  { key: '35to44', from: 35, to: 44 },
+  { key: '45to54', from: 45, to: 54 },
+  { key: '55to58', from: 55, to: 58 },
+];
+const EDU_LABEL: Record<Education, string> = { lessThanHighSchool: '고졸 미만', highSchool: '고졸', someCollege: '대학 중퇴', bachelorsOrMore: '대졸+' };
+
+function buildWomenTargets(): Target[] {
+  const byAge = momentValues('women.employmentStatus.byAge');
+  const byEdu = momentValues('women.employmentStatus.byEducation');
+  const growth = momentValues('women.wageGrowth.byAgeEducation');
+  const ratio = momentValues('women.fullTimeMedianToMen.1999');
+  const lfp = momentValues('women.laborForceParticipation.byYoungestChild');
+  const targets: Target[] = [];
+  for (const band of AGE_BANDS) {
+    targets.push({ key: `w_emp_${band.key}`, label: `여성 취업 ${band.from}–${band.to}세`, target: byAge[`employed_${band.key}`], tolerance: 0.03 });
+    targets.push({ key: `w_unemp_${band.key}`, label: `여성 실업 ${band.from}–${band.to}세`, target: byAge[`unemployed_${band.key}`], tolerance: 0.012 });
+  }
+  for (const edu of EDUCATIONS) {
+    targets.push({ key: `w_emp_${edu}`, label: `여성 취업 — ${EDU_LABEL[edu]}`, target: byEdu[`employed_${edu}`], tolerance: 0.03 });
+    targets.push({ key: `w_unemp_${edu}`, label: `여성 실업 — ${EDU_LABEL[edu]}`, target: byEdu[`unemployed_${edu}`], tolerance: 0.012 });
+    for (const band of AGE_BANDS.slice(0, 4)) {
+      targets.push({ key: `w_growth_${edu}_${band.key}`, label: `여성 임금 성장 %/년 — ${EDU_LABEL[edu]} ${band.from}–${band.to}세`, target: growth[`${edu}_${band.key}`], tolerance: 1.0 });
+    }
+  }
+  targets.push(
+    { key: 'w_wageRatio', label: '여성/남성 임금 중앙값', target: ratio.ratio, tolerance: 0.04 },
+    { key: 'w_lfp_under3', label: '어머니 참가율 — 막내 3세 미만', target: lfp.under3, tolerance: 0.04 },
+    { key: 'w_lfp_under6', label: '어머니 참가율 — 막내 6세 미만', target: lfp.under6, tolerance: 0.04 },
+    { key: 'w_lfp_6to17', label: '어머니 참가율 — 막내 6–17세', target: lfp.age6to17, tolerance: 0.04 },
+  );
+  return targets;
+}
+
+// ---- 보정 내내 고정인 것(부부 표본, 남편 궤적)의 캐시 — 결혼·여성 파라미터와 무관 ----
+
+interface CachedHousehold {
+  couple: Couple;
+  track: HusbandTrack;
+}
+const householdCache = new Map<string, CachedHousehold>();
+const singleCache = new Map<string, PersonProfile>();
+
+export function householdAt(seed: number, i: number): CachedHousehold {
+  const key = `${seed}:${i}`;
+  let h = householdCache.get(key);
+  if (!h) {
+    const couple = sampleHousehold(createRng(seed * 1_000_003 + i * 2));
+    h = { couple, track: buildHusbandTrack(couple.husbandProfile) };
+    householdCache.set(key, h);
+  }
+  return h;
+}
+
+function singleWomanAt(seed: number, i: number): PersonProfile {
+  const key = `${seed}:${i}`;
+  let w = singleCache.get(key);
+  if (!w) {
+    w = sampleSingleWoman(createRng(seed * 1_000_003 + 777_777 + i * 2));
+    singleCache.set(key, w);
+  }
+  return w;
+}
+
+/** 여성 노동 적률 집계기. */
+class WomenLaborTally {
+  private readonly status = new Map<string, [number, number, number]>(); // [월 수, 취업, 실업]
+  private readonly growth = new Map<string, [number, number]>();
+  readonly wages: number[] = [];
+  readonly occupations = new Map<string, number>();
+  occupationTotal = 0;
+  private readonly lfp = new Map<string, [number, number]>();
+
+  addCareer(outcome: CareerOutcome, education: Education): void {
+    for (const r of outcome.years) {
+      if (!r || r.age < 18 || r.age > 58) continue;
+      const band = AGE_BANDS.find((b) => r.age >= b.from && r.age <= b.to)!.key;
+      for (const key of [band, education]) {
+        const cell = this.status.get(key) ?? [0, 0, 0];
+        cell[0] += 12;
+        cell[1] += r.employedMonths;
+        cell[2] += r.unemployedMonths;
+        this.status.set(key, cell);
+      }
+      if (r.occupationAtBirthday && r.occupationAtBirthday !== 'military' && Number.isFinite(r.logWageAtBirthday)) {
+        this.wages.push(Math.exp(r.logWageAtBirthday));
+        this.occupations.set(r.occupationAtBirthday, (this.occupations.get(r.occupationAtBirthday) ?? 0) + 1);
+        this.occupationTotal += 1;
+      }
+    }
+    for (let a = 18; a < 55; a++) {
+      const r0 = outcome.years[a];
+      const r1 = outcome.years[a + 1];
+      if (!r0 || !r1 || !Number.isFinite(r0.logWageAtBirthday) || !Number.isFinite(r1.logWageAtBirthday)) continue;
+      const band = AGE_BANDS.find((b) => a >= b.from && a <= b.to)!.key;
+      const key = `${education}_${band}`;
+      const cell = this.growth.get(key) ?? [0, 0];
+      cell[0] += 1;
+      cell[1] += r1.logWageAtBirthday - r0.logWageAtBirthday + Math.log(1 + realAwiGrowth(r0.year));
+      this.growth.set(key, cell);
+    }
+  }
+
+  onMonth = (result: CareerStepResult, youngest: number | undefined): void => {
+    if (youngest === undefined || result.year < 1985 || result.year > 1995 || youngest >= 216) return;
+    const inForce = result.state === 'employed' || result.state === 'selfEmployed' || result.state === 'unemployed';
+    const brackets = youngest < 36 ? ['under3', 'under6'] : youngest < 72 ? ['under6'] : ['age6to17'];
+    for (const b of brackets) {
+      const cell = this.lfp.get(b) ?? [0, 0];
+      cell[0] += 1;
+      if (inForce) cell[1] += 1;
+      this.lfp.set(b, cell);
+    }
+  };
+
+  write(values: Record<string, number>, menWages: number[]): void {
+    for (const [key, [months, emp, unemp]] of this.status) {
+      values[`w_emp_${key}`] = emp / months;
+      values[`w_unemp_${key}`] = unemp / months;
+    }
+    for (const [key, [n, sum]] of this.growth) values[`w_growth_${key}`] = (100 * sum) / n;
+    values.w_wageRatio = median(this.wages) / median(menWages);
+    for (const b of ['under3', 'under6', 'age6to17']) {
+      const cell = this.lfp.get(b);
+      values[`w_lfp_${b === 'age6to17' ? '6to17' : b}`] = cell ? cell[1] / cell[0] : NaN;
+    }
+  }
+
+  occupationShares(): Record<string, number> {
+    const shares: Record<string, number> = {};
+    for (const [group, occs] of Object.entries(OCCUPATION_TARGET_GROUPS)) {
+      let c = 0;
+      for (const o of occs) c += this.occupations.get(o) ?? 0;
+      shares[group] = c / Math.max(1, this.occupationTotal);
+    }
+    return shares;
+  }
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return NaN;
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 // ---- 집계기 ----
@@ -175,6 +332,8 @@ export interface MeasureResult {
   values: Record<string, number>;
   /** 참고용 부가 지표(보정 대상 아님). */
   extras: Record<string, number>;
+  /** 여성 직업 분포(목표 묶음) — 비례 조정용. */
+  womenOccupationShares: Record<string, number>;
 }
 
 export interface MeasureOptions {
@@ -183,8 +342,10 @@ export interface MeasureOptions {
   disableFinancialConflict?: boolean;
 }
 
-/** 부부 n쌍을 시뮬레이션해서 적률을 잰다. 부부 i는 항상 시드 (seed, i)로 만든다(공통 난수). */
-export function measure(params: MarriageParams, options: MeasureOptions): MeasureResult {
+/** 부부 n쌍(+ 비혼 여성)을 시뮬레이션해서 적률을 잰다. 부부 i는 항상 시드 (seed, i)로 만든다(공통 난수). */
+export function measure(params: MarriageParams, women: WomenLaborParams, options: MeasureOptions): MeasureResult {
+  const womenTally = new WomenLaborTally();
+  const menWages: number[] = [];
   const atRisk = new Float64Array(MAX_DURATION_MONTHS + 1);
   const events = new Float64Array(MAX_DURATION_MONTHS + 1);
   const by55: Record<Education, [number, number]> = {
@@ -259,7 +420,11 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     // 장애 목표(≈1)로 따로 검증한다 — 두 목표를 한 집단에 섞으면 서로 모순된다(README 참고).
     if (r.husbandEmployment === 'unemployed') rates.notFullTime.add('exposed', year, d);
     else if (r.husbandEmployment === 'employed') rates.notFullTime.add('baseline', year, d);
-    rates.homemaker.add(couple.wifeIsHomemaker ? 'exposed' : 'baseline', year, d);
+    // 전업 개월은 어린 자녀가 있는 달에 몰린다 — 자녀가 이혼을 막는 효과가 섞이지 않게 자녀 수·막내 6세
+    // 미만 여부까지 층에 넣는다(원 연구의 가구 공변량 통제에 해당).
+    const homeStratum = `${year}|k${Math.min(r.childrenCount, 2)}|y${r.youngestChildAgeMonths !== undefined && r.youngestChildAgeMonths < 72 ? 1 : 0}`;
+    if (r.wifeAtHome) rates.homemaker.add('exposed', homeStratum, d);
+    else if (r.wifeEmployed) rates.homemaker.add('baseline', homeStratum, d);
 
     if (r.childrenCount === 0) {
       rates.youngChild.add('baseline', year, d);
@@ -281,14 +446,18 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     censorAtHusbandAge: 55,
     keepMonths: false,
     disableFinancialConflict: options.disableFinancialConflict,
+    wifeUntilAge: 59,
+    onWifeMonth: womenTally.onMonth,
   };
 
   for (let i = 0; i < options.n; i++) {
-    const couple = sampleCouple(createRng(options.seed * 1_000_003 + i * 2));
+    const { couple, track } = householdAt(options.seed, i);
+    for (const w of track.birthdayWages) menWages.push(w);
     satLen = 0;
     displacedBefore40 = false;
     displacementEvents = [];
-    const outcome = simulateCouple(couple, params, createRng(options.seed * 1_000_003 + i * 2 + 1), simOptions, onMonth);
+    const outcome = simulateCouple(couple, params, { husbandTrack: track, women, seed: options.seed * 1_000_003 + i * 2 + 1 }, simOptions, onMonth);
+    if (outcome.wifeCareer) womenTally.addCareer(outcome.wifeCareer, couple.wifeProfile.education);
     const divorced = outcome.endReason === 'divorce';
 
     // ---- 출산 집계 ----
@@ -361,6 +530,13 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     }
   }
 
+  // 비혼 여성: 결혼한 아내 n명 대비 15/85.
+  const singles = Math.round((options.n * FIXED_ASSUMPTIONS.neverMarriedWomenShare) / (1 - FIXED_ASSUMPTIONS.neverMarriedWomenShare));
+  for (let i = 0; i < singles; i++) {
+    const profile = singleWomanAt(options.seed, i);
+    womenTally.addCareer(simulateSingleWoman(profile, women, 59, undefined, womenTally.onMonth), profile.education);
+  }
+
   let survival = 1;
   const survivalAt: Record<number, number> = {};
   for (let m = 0; m <= MAX_DURATION_MONTHS; m++) {
@@ -417,9 +593,11 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     dispWeight += en;
   }
   values.displacementFertility = dispWeight > 0 ? dispDiff / dispWeight : NaN;
+  womenTally.write(values, menWages);
 
   return {
     values,
+    womenOccupationShares: womenTally.occupationShares(),
     extras: {
       shareMonthsHusbandNotFullTime: notFullTimeMonths / totalMonths,
       shareMonthsWithFinancialConflict: financialConflictMonths / totalMonths,

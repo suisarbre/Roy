@@ -1,5 +1,5 @@
 import { createRng, type Rng } from '../rng';
-import { gaussian } from '../marriage/population';
+import { gaussian } from '../stats';
 import type { Schooling } from './occupations';
 import { CAREER_STRUCTURE as S, type CareerParams } from './params';
 import { EDUCATIONS, type Education, type Worker, type WorkerTraits } from './types';

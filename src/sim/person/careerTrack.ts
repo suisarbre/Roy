@@ -104,6 +104,8 @@ export const CAREER_EVENT_SALIENCE: Readonly<Record<CareerEventKind, { salience:
   businessStarted: { salience: 0.7, domain: 'dreams' },
   businessClosed: { salience: 0.75, domain: 'livelihood' },
   retired: { salience: 0.6, domain: 'work' },
+  leftForFamily: { salience: 0.6, domain: 'familyDuty' },
+  returnedToWork: { salience: 0.5, domain: 'work' },
 };
 
 export const OCCUPATION_LABEL_EN: Readonly<Record<OccupationId, string>> = {
@@ -167,6 +169,10 @@ export function describeCareerEvent(name: string, event: CareerEvent): string {
       return `${name}'s business went under.`;
     case 'retired':
       return `${name} retired.`;
+    case 'leftForFamily':
+      return `${name} stopped working to stay home with the baby.`;
+    case 'returnedToWork':
+      return `${name} started looking for work again.`;
   }
 }
 

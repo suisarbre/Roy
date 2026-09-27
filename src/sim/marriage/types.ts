@@ -113,6 +113,8 @@ export interface SimulateOptions {
   forcedShock?: { atDuration: number; kind: JobShockKind };
   /** 시나리오 데모용: 아내의 가사 여부를 고정(경력 모델의 결정 대신). */
   forceWifeAtHome?: boolean;
+  /** 사망을 이 모델 밖에서 다룰 때(게임 NPC — 사망은 npc/lifecycle.ts가 굴린다). */
+  ignoreMortality?: boolean;
   /** 결혼이 끝난 뒤에도 아내의 경력을 이 나이까지 굴린다(여성 노동 적률). 없으면 결혼 종료에서 멈춤. */
   wifeUntilAge?: number;
   /** 아내의 매달 경력 결과 + 막내 나이 — 어머니 경제활동 참가율 집계용. */

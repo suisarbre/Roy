@@ -1,5 +1,5 @@
 import { randomPolicy } from '../sim/attend';
-import { CAREER_EVENT_SALIENCE, careerLifeOf, describeCareerEvent } from '../sim/person/careerTrack';
+import { CAREER_EVENT_SALIENCE, describeCareerEvent, describeFamilyEvent } from '../sim/person/careerTrack';
 import { temperamentFromTraits } from '../sim/person/temperament';
 import { catchUpNpc } from '../sim/npc/lifecycle';
 import type { NpcLod, NpcSimRecord } from '../sim/npc/types';
@@ -44,9 +44,14 @@ function toSimRecord(npc: Npc): NpcSimRecord {
 /** 체크인 사실로 올릴 경력 사건의 현저성 문턱 — 평범한 이직·승진은 기억 그래프에 안 올린다. */
 const CAREER_FACT_SALIENCE = 0.5;
 
-function describeLifeCourseChanges(name: string, before: LifeCourseState, after: LifeCourseState, includeEmployment: boolean): string[] {
+/** legacy=false(인생 이야기가 있는 NPC)면 결혼·취업은 실제 사건으로 따로 말하므로 자가 보유만. */
+function describeLifeCourseChanges(name: string, before: LifeCourseState, after: LifeCourseState, legacy: boolean): string[] {
   const facts: string[] = [];
 
+  if (!legacy) {
+    if (!before.isHomeowner && after.isHomeowner) facts.push(`${name} bought a home.`);
+    return facts;
+  }
   if (after.divorceCount > before.divorceCount) {
     facts.push(`${name} went through a divorce.`);
   } else if (after.marriageCount > before.marriageCount) {
@@ -55,7 +60,6 @@ function describeLifeCourseChanges(name: string, before: LifeCourseState, after:
 
   if (!before.isHomeowner && after.isHomeowner) facts.push(`${name} bought a home.`);
 
-  if (!includeEmployment) return facts;
   if (before.employed && !after.employed) {
     facts.push(`${name} lost their job.`);
   } else if (after.employed && after.jobsHeldCount > before.jobsHeldCount) {
@@ -91,13 +95,17 @@ export function runNpcCheckIn(npc: Npc, currentDate: GameDate): NpcCheckInResult
     return { npc: updatedNpc, facts: [`${npc.name} died.`] };
   }
 
-  // 경력 모델이 있는 NPC는 취업/실직을 lifeCourse 카운터 차이가 아니라 실제 사건으로 말한다
-  // ("공장이 문을 닫아 일자리를 잃었다" 같은 구체적인 사실).
-  const hasCareer = !!npc.profile && !!careerLifeOf(npc.profile);
-  const facts = result.npc.life ? describeLifeCourseChanges(npc.name, beforeLife, result.npc.life, !hasCareer) : [];
+  // 인생 이야기(경력 + 결혼 모델)가 있는 NPC는 결혼·출산·이혼·취업·실직을 카운터 차이가 아니라 실제 사건으로
+  // 말한다("공장이 문을 닫아 일자리를 잃었다", "아이가 태어났다"). 날짜 순으로 섞는다.
+  const facts = result.npc.life ? describeLifeCourseChanges(npc.name, beforeLife, result.npc.life, !npc.profile) : [];
+  const dated: { t: number; text: string }[] = [];
+  // 같은 달이면 가족 사건이 먼저(결혼 → 출산 → 출산 후 휴직 순서). 정렬은 안정적이다.
+  for (const event of result.familyEvents) dated.push({ t: event.date.year * 12 + event.date.month, text: describeFamilyEvent(npc.name, event) });
   for (const event of result.careerEvents) {
-    if (CAREER_EVENT_SALIENCE[event.kind].salience >= CAREER_FACT_SALIENCE) facts.push(describeCareerEvent(npc.name, event));
+    if (CAREER_EVENT_SALIENCE[event.kind].salience >= CAREER_FACT_SALIENCE) dated.push({ t: event.date.year * 12 + event.date.month, text: describeCareerEvent(npc.name, event) });
   }
+  dated.sort((a, b) => a.t - b.t);
+  facts.push(...dated.map((d) => d.text));
   return { npc: updatedNpc, facts };
 }
 

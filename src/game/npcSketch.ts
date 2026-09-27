@@ -1,4 +1,4 @@
-import { careerStatusAt, describeCareerStatus } from '../sim/person/careerTrack';
+import { careerStatusAt, describeCareerStatus, familyStatusAt, storyOptionsFor } from '../sim/person/careerTrack';
 import type { PersonProfile } from '../sim/person/profile';
 import { describeTraits } from '../sim/person/temperament';
 import type { GameDate, Npc } from './types';
@@ -28,7 +28,14 @@ export function describeNpcForScene(npc: Npc, date: GameDate): string {
   if (traits.length) parts.push(traits.join('; '));
   const degree = profile.degree === 'law' ? 'law degree' : profile.degree === 'medicine' ? 'medical degree' : SCHOOLING_EN[profile.schooling];
   if (age >= 18) parts.push(degree);
-  const work = describeCareerStatus(careerStatusAt(profile, date));
+  const storyOptions = storyOptionsFor(npc.relationType);
+  const work = describeCareerStatus(careerStatusAt(profile, date, storyOptions));
   if (work) parts.push(work);
+  if (npc.relationType !== 'spouse' && age >= 18) {
+    const family = familyStatusAt(profile, date, storyOptions);
+    const kids = family.children === 0 ? '' : family.children === 1 ? ', one child' : `, ${family.children} children`;
+    const status = { never: 'never married', married: 'married', divorced: 'divorced', widowed: 'widowed' }[family.maritalStatus];
+    parts.push(`${status}${kids}`);
+  }
   return parts.length ? `${head}: ${parts.join('. ')}.` : head;
 }

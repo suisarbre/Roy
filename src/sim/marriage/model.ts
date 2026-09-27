@@ -177,8 +177,8 @@ export function simulateCouple(
       endReason = 'censored';
       break;
     }
-    const husbandDies = rng() < monthlyDeathProbability(husband.birthYear, 'male', husbandAge);
-    const wifeDies = rng() < monthlyDeathProbability(wife.birthYear, 'female', wifeAge);
+    const husbandDies = !options.ignoreMortality && rng() < monthlyDeathProbability(husband.birthYear, 'male', husbandAge);
+    const wifeDies = !options.ignoreMortality && rng() < monthlyDeathProbability(wife.birthYear, 'female', wifeAge);
     if (husbandDies || wifeDies) {
       endReason = 'widowed';
       wifeDied = wifeDies;

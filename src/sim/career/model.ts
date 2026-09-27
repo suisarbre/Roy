@@ -152,7 +152,11 @@ export interface CareerStepResult {
   logWage?: number;
   /** 이번 달 소득(AWI 배수, 월). */
   earnings: number;
+  /** 순자산(AWI 배수). */
+  netWorth: number;
   eventKind?: CareerEventKind;
+  /** 사건 문자열(한국어, 예: "항공우주 구조조정으로 공장 폐쇄"). */
+  event?: string;
 }
 
 export interface CareerStepper {
@@ -316,6 +320,7 @@ export function createCareerStepper(worker: Worker, p: CareerParams, seedRng: Rn
   let ctx: HouseholdContext | undefined;
   let monthEarnings = 0;
   let lastEventKind: CareerEventKind | undefined;
+  let lastEvent: string | undefined;
 
   const stepBody = (): void => {
     const total = worker.birthYear * 12 + worker.birthMonth + ageMonths;
@@ -384,6 +389,7 @@ export function createCareerStepper(worker: Worker, p: CareerParams, seedRng: Rn
         if (months) months.push({ ageMonths, year, month: total % 12, state: 'student', occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth, event, eventKind });
         if (ageMonths % 12 === 11) annualMoney(rec, year, age, true);
         lastEventKind = eventKind;
+        lastEvent = event;
         return;
       }
     }
@@ -630,6 +636,7 @@ export function createCareerStepper(worker: Worker, p: CareerParams, seedRng: Rn
       if (age >= 22 && age < 62) careerEarnings.push(rec.earnings);
     }
     lastEventKind = eventKind;
+    lastEvent = event;
   };
 
   return {
@@ -650,7 +657,9 @@ export function createCareerStepper(worker: Worker, p: CareerParams, seedRng: Rn
         occupation: job?.occupation.id,
         logWage: job && !job.student ? currentWage() : undefined,
         earnings: monthEarnings,
+        netWorth: wealth + bizEquity,
         eventKind: lastEventKind,
+        event: lastEvent,
       };
     },
     finish: () => ({ worker, years, jobs, businesses, unemploymentAtSchoolExit, months }),

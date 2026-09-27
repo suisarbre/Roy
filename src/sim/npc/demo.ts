@@ -7,7 +7,7 @@ import { detectNpcCollisions } from './collision';
 import { catchUpNpc } from './lifecycle';
 import { createNpcSimRecord, decayNpcImportance, registerNpcInteraction } from './lod';
 import type { NpcSimRecord } from './types';
-import { careerStatusAt, describeCareerStatus, describeTraits, sampleProfile, type PersonTraits } from '../person';
+import { buildLifeStory, careerStatusAt, describeCareerStatus, describeTraits, familyStatusAt, sampleProfile, type PersonTraits } from '../person';
 
 /**
  * 4단계(NPC LOD + 지연 평가 + 실타래 충돌 감지)가 실제로 동작하는지 보여주는 데모.
@@ -132,6 +132,7 @@ function runDemo(seed: number): DemoReport {
   log.push(`[collision] ${totalMonths}개월 나란히 시뮬레이션 중 충돌 감지된 달: ${collisionMonths}`);
 
   personalitySection(log, seed);
+  storyPopulationSection(log, seed);
 
   return { log, collisionMonths, totalMonths, exampleCollision };
 }
@@ -170,6 +171,34 @@ function personalitySection(log: string[], seed: number): void {
     log.push(`[person]   24개월 관심 배분: ${JSON.stringify(attendedDomains)}`);
     log.push(`[person]   1978–2000 경력 사건 ${result.careerEvents.length}건, 현저한 것: ${salient.join(' / ') || '없음'}`);
     log.push(`[person]   2000년 현재: ${describeCareerStatus(careerStatusAt(profile, to))} · 일자리 ${result.npc.life?.jobsHeldCount ?? 0}곳`);
+  }
+}
+
+/**
+ * 6) 인생 이야기 모집단 요약: 1960년생 NPC 남녀 각 600명의 이야기(경력 + 결혼 모델)를 모아, 보정 목표와 같은
+ *    방향의 숫자가 나오는지 본다(정밀 검증은 npm run sim:marriage / sim:career 몫 — 여기선 연결이 맞는지만).
+ */
+function storyPopulationSection(log: string[], seed: number): void {
+  const at50 = { year: 2010, month: 1 };
+  for (const sex of ['male', 'female'] as const) {
+    let married = 0;
+    let divorced = 0;
+    let kids = 0;
+    let employed40 = 0;
+    const n = 600;
+    for (let i = 0; i < n; i++) {
+      const profile = sampleProfile(seed * 100_000 + i * 2 + (sex === 'male' ? 0 : 1), { sex, birthYear: 1960 });
+      const story = buildLifeStory(profile);
+      const fam = familyStatusAt(profile, at50);
+      if (fam.maritalStatus !== 'never') married += 1;
+      if (story.familyEvents.some((e) => e.kind === 'divorced' && e.date.year < 2010)) divorced += 1;
+      kids += fam.children;
+      const s40 = careerStatusAt(profile, { year: 2000, month: 1 });
+      if (s40?.state === 'employed' || s40?.state === 'selfEmployed') employed40 += 1;
+    }
+    log.push(
+      `[story] ${sex === 'male' ? '남' : '여'} 1960년생 ${n}명 50세: 결혼 경험 ${((100 * married) / n).toFixed(0)}% · 첫 결혼 이혼 ${((100 * divorced) / Math.max(1, married)).toFixed(0)}% · 평균 자녀 ${(kids / n).toFixed(2)} · 40세 취업 ${((100 * employed40) / n).toFixed(0)}%`,
+    );
   }
 }
 

@@ -1,41 +1,22 @@
 import type { GameDate } from '../../game/types';
+import type { CareerStepResult } from '../career/model';
+import type { OccupationId } from '../career/occupations';
+import type { CareerEventKind, LaborState } from '../career/types';
 import { averageAnnualWageAt } from '../data';
 import { dateToTotalMonths, totalMonthsToDate } from '../gameDate';
-import { simulateCareer } from '../career/model';
-import type { OccupationId } from '../career/occupations';
-import type { CareerParams } from '../career/params';
-import type { CareerEventKind, CareerOutcome, LaborState, MonthTrace } from '../career/types';
-import { createRng } from '../rng';
 import type { ThreadDomain } from '../threads/types';
-import { DEFAULT_CAREER_PARAMS, toWorker, type PersonProfile } from './profile';
+import { buildLifeStory, type FamilyEvent, type FamilyEventKind, type LifeStoryOptions } from './lifeStory';
+import type { PersonProfile } from './profile';
 
 /**
- * 한 사람의 경력 궤적을 필요할 때 계산해서 보여주는 창. 경력은 프로필의 lifeSeed로 완전히 정해지므로
- * 저장하지 않고 캐시만 한다 — 배경 NPC는 한 번 계산(약 1ms)해 요약만 보고, 가까운 NPC는 월별 사건을
- * 실타래 이벤트로 받는다(npc/lifecycle.ts).
- *
- * 여성: 경력 모델은 아직 남성만 보정돼 있다(1960년대생 여성의 노동 참여는 결혼·출산과 얽혀 있어서
- * 결혼 모델과 통합하는 단계에서 넣는다). 그때까지 여성 프로필의 경력은 undefined.
+ * 한 사람의 인생 이야기(lifeStory.ts — 경력 + 결혼·출산)를 날짜로 들여다보는 창. 배경 NPC는 요약만 보고,
+ * 가까운 NPC는 월별 사건을 실타래 이벤트로 받는다(npc/lifecycle.ts). 남녀 모두 — 여성의 경력은 결혼·출산과
+ * 함께 굴린 결과다.
  */
 
-const cache = new Map<string, CareerOutcome>();
-const CACHE_LIMIT = 2000;
-
-export function careerLifeOf(profile: PersonProfile, params: CareerParams = DEFAULT_CAREER_PARAMS): CareerOutcome | undefined {
-  if (profile.sex !== 'male') return undefined;
-  const key = `${profile.lifeSeed}:${profile.birthYear}:${params === DEFAULT_CAREER_PARAMS ? 'default' : JSON.stringify(params)}`;
-  let outcome = cache.get(key);
-  if (!outcome) {
-    outcome = simulateCareer(toWorker(profile), params, createRng(profile.lifeSeed), { keepMonths: true, untilAge: 80 });
-    if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value!);
-    cache.set(key, outcome);
-  }
-  return outcome;
-}
-
-function monthIndex(profile: PersonProfile, outcome: CareerOutcome, date: GameDate): number {
+function monthAt(profile: PersonProfile, months: readonly CareerStepResult[], date: GameDate): number {
   const ageMonths = dateToTotalMonths(date) - (profile.birthYear * 12 + profile.birthMonth);
-  return ageMonths - (outcome.months?.[0]?.ageMonths ?? 16 * 12);
+  return ageMonths - (months[0]?.ageMonths ?? 16 * 12);
 }
 
 export interface CareerStatus {
@@ -47,15 +28,15 @@ export interface CareerStatus {
   netWorthDollars: number;
 }
 
-export function careerStatusAt(profile: PersonProfile, date: GameDate): CareerStatus | undefined {
-  const outcome = careerLifeOf(profile);
-  if (!outcome?.months) return undefined;
-  const i = monthIndex(profile, outcome, date);
+export function careerStatusAt(profile: PersonProfile, date: GameDate, options?: LifeStoryOptions): CareerStatus | undefined {
+  const { months } = buildLifeStory(profile, options);
+  if (months.length === 0) return undefined;
+  const i = monthAt(profile, months, date);
   if (i < 0) return { state: 'child', netWorthDollars: 0 };
-  const m: MonthTrace = outcome.months[Math.min(i, outcome.months.length - 1)];
+  const m = months[Math.min(i, months.length - 1)];
   const awi = averageAnnualWageAt(m.year);
   return {
-    state: i >= outcome.months.length ? 'retired' : m.state,
+    state: i >= months.length ? 'retired' : m.state,
     occupation: m.occupation,
     annualWageDollars: m.logWage !== undefined && m.state === 'employed' ? Math.round(Math.exp(m.logWage) * awi) : undefined,
     netWorthDollars: Math.round(m.netWorth * awi),
@@ -71,19 +52,72 @@ export interface CareerEvent {
 }
 
 /** [from, to) 구간의 경력 사건. */
-export function careerEventsBetween(profile: PersonProfile, from: GameDate, to: GameDate): CareerEvent[] {
-  const outcome = careerLifeOf(profile);
-  if (!outcome?.months) return [];
-  const start = Math.max(0, monthIndex(profile, outcome, from));
-  const end = Math.min(outcome.months.length, monthIndex(profile, outcome, to));
+export function careerEventsBetween(profile: PersonProfile, from: GameDate, to: GameDate, options?: LifeStoryOptions): CareerEvent[] {
+  const { months } = buildLifeStory(profile, options);
+  const start = Math.max(0, monthAt(profile, months, from));
+  const end = Math.min(months.length, monthAt(profile, months, to));
   const events: CareerEvent[] = [];
   const base = profile.birthYear * 12 + profile.birthMonth;
   for (let i = start; i < end; i++) {
-    const m = outcome.months[i];
+    const m = months[i];
     if (!m.eventKind) continue;
     events.push({ date: totalMonthsToDate(base + m.ageMonths), kind: m.eventKind, occupation: m.occupation, text: m.event ?? m.eventKind });
   }
   return events;
+}
+
+/** [from, to) 구간의 가족 사건(결혼·출산·이혼·사별). */
+export function familyEventsBetween(profile: PersonProfile, from: GameDate, to: GameDate, options?: LifeStoryOptions): FamilyEvent[] {
+  const lo = dateToTotalMonths(from);
+  const hi = dateToTotalMonths(to);
+  return buildLifeStory(profile, options).familyEvents.filter((e) => {
+    const t = dateToTotalMonths(e.date);
+    return t >= lo && t < hi;
+  });
+}
+
+/** 관계 유형 → 인생 이야기 옵션: 배우자는 Roy와 결혼했고, 부모는 반드시 결혼했다. */
+export function storyOptionsFor(relationType: string): LifeStoryOptions {
+  return { marriedToRoy: relationType === 'spouse', forceMarried: relationType === 'parent' };
+}
+
+export interface FamilyStatus {
+  maritalStatus: 'never' | 'married' | 'divorced' | 'widowed';
+  children: number;
+}
+
+export function familyStatusAt(profile: PersonProfile, date: GameDate, options?: LifeStoryOptions): FamilyStatus {
+  if (options?.marriedToRoy) return { maritalStatus: 'married', children: 0 };
+  const t = dateToTotalMonths(date);
+  let maritalStatus: FamilyStatus['maritalStatus'] = 'never';
+  let children = 0;
+  for (const e of buildLifeStory(profile, options).familyEvents) {
+    if (dateToTotalMonths(e.date) > t) break;
+    if (e.kind === 'married') maritalStatus = 'married';
+    else if (e.kind === 'childBorn') children += 1;
+    else maritalStatus = e.kind;
+  }
+  return { maritalStatus, children };
+}
+
+export const FAMILY_EVENT_SALIENCE: Readonly<Record<FamilyEventKind, { salience: number; domain: ThreadDomain }>> = {
+  married: { salience: 0.75, domain: 'relationships' },
+  childBorn: { salience: 0.8, domain: 'familyDuty' },
+  divorced: { salience: 0.85, domain: 'relationships' },
+  widowed: { salience: 0.9, domain: 'relationships' },
+};
+
+export function describeFamilyEvent(name: string, event: FamilyEvent): string {
+  switch (event.kind) {
+    case 'married':
+      return `${name} got married.`;
+    case 'childBorn':
+      return `${name} had a baby.`;
+    case 'divorced':
+      return `${name} went through a divorce.`;
+    case 'widowed':
+      return `${name}'s spouse died.`;
+  }
 }
 
 /** 실타래 이벤트로 옮길 때의 현저성과 도메인 — 설계 가정(npc/collision.ts 문턱 0.5 기준: 해고·폐쇄·

@@ -1,4 +1,4 @@
-import { createCareerStepper } from '../career/model';
+import { createCareerStepper, type CareerStepResult } from '../career/model';
 import type { CareerParams } from '../career/params';
 import { DEFAULT_CAREER_PARAMS, sampleProfile, toSpouse, toWorker, type PersonProfile } from '../person/profile';
 import { createRng, type Rng } from '../rng';
@@ -73,14 +73,15 @@ export function sampleSingleWoman(rng: Rng, careerParams: CareerParams = DEFAULT
 }
 
 /** 남편의 경력을 16~60세까지 굴려 결혼 모델이 읽는 압축 궤적으로. 결혼과 무관하므로 보정 내내 재사용. */
-export function buildHusbandTrack(profile: PersonProfile, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): HusbandTrack {
-  const stepper = createCareerStepper(toWorker(profile), careerParams, createRng(profile.lifeSeed), { untilAge: 60 });
-  const months = (60 - 16) * 12;
+export function buildHusbandTrack(profile: PersonProfile, careerParams: CareerParams = DEFAULT_CAREER_PARAMS, untilAge = 60, collect?: CareerStepResult[]): HusbandTrack {
+  const stepper = createCareerStepper(toWorker(profile), careerParams, createRng(profile.lifeSeed), { untilAge });
+  const months = (untilAge - 16) * 12;
   const employment = new Uint8Array(months);
   const shock = new Uint8Array(months);
   const earnings = new Float32Array(months);
   let i = 0;
   for (let r = stepper.step(); r && i < months; r = stepper.step(), i++) {
+    collect?.push(r);
     const out = r.state === 'unemployed' || (r.state === 'outOfLaborForce' && !r.disabled);
     employment[i] = r.disabled ? 2 : out ? 1 : 0;
     shock[i] = r.eventKind === 'laidOff' ? 1 : r.eventKind === 'plantClosing' ? 2 : r.eventKind === 'disabled' ? 3 : 0;

@@ -146,6 +146,8 @@ export interface LifeCourseState {
   unemploymentMonthsRemaining: number;
 
   isHomeowner: boolean;
+  /** 자녀 수 — 인생 이야기(sim/person/lifeStory)가 있는 NPC만 센다. */
+  childrenCount?: number;
 }
 
 export function createInitialLifeCourseState(): LifeCourseState {

@@ -27,6 +27,8 @@
     "src/game/threadEngineCheck.ts",
     "src/game/npcCheckInCheck.ts",
     "src/sim/marriage/cli.ts",
-    "src/sim/marriage/calibrate.ts"
+    "src/sim/marriage/calibrate.ts",
+    "src/sim/career/cli.ts",
+    "src/sim/career/calibrate.ts"
   ]
 }

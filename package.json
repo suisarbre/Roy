@@ -16,7 +16,9 @@
     "check:thread-engine": "tsx src/game/threadEngineCheck.ts",
     "check:npc-checkin": "tsx src/game/npcCheckInCheck.ts",
     "sim:marriage": "tsx src/sim/marriage/cli.ts",
-    "sim:marriage:calibrate": "tsx src/sim/marriage/calibrate.ts"
+    "sim:marriage:calibrate": "tsx src/sim/marriage/calibrate.ts",
+    "sim:career": "tsx src/sim/career/cli.ts",
+    "sim:career:calibrate": "tsx src/sim/career/calibrate.ts"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

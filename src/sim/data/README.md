@@ -16,6 +16,7 @@ LLM이나 브라우저 없이 Node에서 바로 쓸 수 있다.
 | `lifeTables.ts` | 코호트 생명표 q(x), 월 사망확률, 사망 나이 샘플링 | 1930·1940·1960·1970·1990 코호트, 남녀, 0–119세 | SSA Actuarial Study 120 Table 7 |
 | `eraFacts.ts` | NBER 경기 침체 기준일, 징병 등록(Selective Service) 사실 | 1969–2020 / 1973–1987 | NBER, Proclamation 4771 |
 | `validationTargets.ts` | 하네스 검증 타깃(사망, 결혼·이혼, 일자리, 출산, 자가 보유) | NLSY79(1957–64년생) 중심 | BLS NLSY79, SSA |
+| `work.ts` | 경력·재산 모델(`src/sim/career`)의 보정 적률: 학력 분포, 학력별 소득, 학력×나이 임금 성장, 고용 상태, 일자리 지속, 이직, 실직 손실, 불황 졸업, 성격과 임금, 세대 간 이동, 사업 생존, 자영업, 순자산; 직업별 남성 임금·인원(CPS 1999), LA 항공우주 붕괴 | 1957–64년생 중심, 1999 횡단면 | BLS NLSY79·CPS·BED, Census P20-528, SCF 2022, RAND RB7510, 논문 초록 |
 
 각 파일 머리 주석에 URL, 대조한 값, 외삽 가정이 있다.
 

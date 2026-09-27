@@ -63,3 +63,4 @@ export {
   type DivorceRegime,
 } from './marriage';
 export { FERTILITY_MOMENTS } from './fertility';
+export { WORK_MOMENTS, LA_AEROSPACE_FACTS, AWI_2022, MEN_FULL_TIME_MEDIAN_WEEKLY_1999 } from './work';

@@ -7,6 +7,7 @@ import { detectNpcCollisions } from './collision';
 import { catchUpNpc } from './lifecycle';
 import { createNpcSimRecord, decayNpcImportance, registerNpcInteraction } from './lod';
 import type { NpcSimRecord } from './types';
+import { careerStatusAt, describeCareerStatus, describeTraits, sampleProfile, type PersonTraits } from '../person';
 
 /**
  * 4단계(NPC LOD + 지연 평가 + 실타래 충돌 감지)가 실제로 동작하는지 보여주는 데모.
@@ -130,7 +131,46 @@ function runDemo(seed: number): DemoReport {
   }
   log.push(`[collision] ${totalMonths}개월 나란히 시뮬레이션 중 충돌 감지된 달: ${collisionMonths}`);
 
+  personalitySection(log, seed);
+
   return { log, collisionMonths, totalMonths, exampleCollision };
+}
+
+/**
+ * 5) 성격이 있는 NPC: 같은 해(1960년) LA에서 태어난 두 동네 친구. 성격만 다르게 주고 나머지(집안·운)는
+ *    각자의 시드에서. 경력은 경력 행위자 모델이, 실타래 관심은 성격이 정한다(sim/person).
+ */
+function personalitySection(log: string[], seed: number): void {
+  const people: { id: string; label: string; traits: Partial<PersonTraits> }[] = [
+    { id: 'steady', label: '성실·친화', traits: { conscientiousness: 1.3, agreeableness: 1.0, neuroticism: -0.8, riskTolerance: -0.5 } },
+    { id: 'restless', label: '충동·비친화·모험', traits: { conscientiousness: -1.2, agreeableness: -1.0, neuroticism: 0.9, riskTolerance: 1.4, extraversion: 1.0 } },
+  ];
+  const from = { year: 1978, month: 1 };
+  const to = { year: 2000, month: 1 };
+  for (const person of people) {
+    const profile = sampleProfile(seed * 1000 + (person.id === 'steady' ? 1 : 2), { sex: 'male', birthYear: 1960, traits: person.traits });
+    let npc = createNpcSimRecord({ id: person.id, relationType: 'friend', birthYear: 1960, sex: 'male', createdAt: from, profile, importanceScore: 60 });
+    // 관심 배분 비교용 판: 생계·관계·꿈 실타래를 하나씩.
+    npc = {
+      ...npc,
+      board: {
+        threads: [decayThread(`${person.id}-money`, 'livelihood', 50), decayThread(`${person.id}-friends`, 'relationships', 50), decayThread(`${person.id}-dream`, 'dreams', 50)],
+        resources: { money: 0, stress: 0, attentionBudget: 1 },
+      },
+    };
+    const rng = createRng(seed + 99);
+    const attendedDomains: Record<string, number> = {};
+    for (let i = 0; i < 24; i++) {
+      const picked = npc.temperament.attend(npc.board!.threads, npc.board!.resources, rng);
+      for (const t of npc.board!.threads) if (picked.has(t.id)) attendedDomains[t.domain] = (attendedDomains[t.domain] ?? 0) + 1;
+    }
+    const result = catchUpNpc(npc, to, rng);
+    const salient = result.events.filter((e) => e.threadId.endsWith('-career') && e.salience >= 0.5).map((e) => e.label);
+    log.push(`[person] ${person.label}: ${profile.schooling}, 성격 "${describeTraits(profile.traits).join('; ')}", 인내심 ${npc.temperament.patience.toFixed(2)}`);
+    log.push(`[person]   24개월 관심 배분: ${JSON.stringify(attendedDomains)}`);
+    log.push(`[person]   1978–2000 경력 사건 ${result.careerEvents.length}건, 현저한 것: ${salient.join(' / ') || '없음'}`);
+    log.push(`[person]   2000년 현재: ${describeCareerStatus(careerStatusAt(profile, to))} · 일자리 ${result.npc.life?.jobsHeldCount ?? 0}곳`);
+  }
 }
 
 function main(): void {

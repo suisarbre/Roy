@@ -1,5 +1,7 @@
 import type { GameDate, NpcId, NpcRelationType } from '../../game/types';
 import type { Sex } from '../data';
+import type { PersonProfile } from '../person/profile';
+import { temperamentFromTraits } from '../person/temperament';
 import { lodForImportance } from './types';
 import type { NpcSimRecord, NpcTemperament } from './types';
 
@@ -33,9 +35,13 @@ export function createNpcSimRecord(params: {
   birthYear: number;
   sex: Sex;
   createdAt: GameDate;
-  temperament: NpcTemperament;
+  /** 생략하면 profile의 성격에서 만든다(둘 다 없으면 오류). */
+  temperament?: NpcTemperament;
+  profile?: PersonProfile;
   importanceScore?: number;
 }): NpcSimRecord {
+  const temperament = params.temperament ?? (params.profile ? temperamentFromTraits(params.profile.traits) : undefined);
+  if (!temperament) throw new Error('createNpcSimRecord: temperament나 profile 중 하나는 있어야 한다');
   const importanceScore = params.importanceScore ?? BASE_IMPORTANCE_BY_RELATION[params.relationType];
   return {
     id: params.id,
@@ -46,7 +52,8 @@ export function createNpcSimRecord(params: {
     importanceScore,
     lod: lodForImportance(importanceScore),
     lastSimulatedAt: params.createdAt,
-    temperament: params.temperament,
+    temperament,
+    profile: params.profile,
   };
 }
 

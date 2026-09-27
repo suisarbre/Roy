@@ -1,6 +1,7 @@
 import type { Sex } from '../../sim/data';
 import type { LifeCourseState } from '../../sim/lifeCourse';
 import type { NpcBoard } from '../../sim/npc/types';
+import type { PersonProfile } from '../../sim/person/profile';
 import type { MemoryGraph } from './memory';
 import type { ContactFrequency } from './stats';
 import type { GameDate } from './time';
@@ -74,4 +75,7 @@ export interface Npc {
   /** major 등급 NPC가 자기 실타래를 갖는 경우에만 생긴다(Roy의 GameState.threads와는
    *  별개의 독립 보드) — catchUpNpc가 채운다. */
   simBoard?: NpcBoard;
+  /** 기질·배경(sim/person) — 생성 때 한 번 뽑고 안 바뀐다. 경력(경력 행위자 모델), 실타래 관심 배분,
+   *  장면 프롬프트의 인물 묘사가 전부 여기서 나온다. 옛 저장에는 없을 수 있다. */
+  profile?: PersonProfile;
 }

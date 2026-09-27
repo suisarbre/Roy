@@ -65,6 +65,8 @@ export interface TurnResponse {
 export interface SceneTurnRequest {
   clock: GameClock;
   involvedNpcNames: string[];
+  /** 시뮬레이션이 정한 인물 묘사(성격·학력·지금 하는 일) — game/npcSketch.ts. 없으면 이름만. */
+  involvedNpcSketches?: string[];
   exchangesSoFar: SceneExchange[];
   playerInput: string;
   recalledMemories: RecalledMemory[];

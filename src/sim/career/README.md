@@ -135,8 +135,8 @@ const life = simulateCareer(worker, params, rng, { keepMonths: true });
 life.months  // 월별 상태·직업·임금·순자산·사건("해고", "관리자로 승진", "항공우주 구조조정으로 공장 폐쇄" …)
 ```
 
-- NPC LOD: 배경 NPC는 이 함수를 한 번 돌려 인생 요약만 들고 다니고(`years`), 주요 NPC와 Roy는 월별 사건을
-  실타래 트리거로 쓴다. 사건 문자열은 LLM 카메라에게 넘길 장면 힌트다
+- NPC는 `src/sim/person`을 통해 쓴다: 프로필의 lifeSeed로 궤적을 계산·캐시하고(`careerLifeOf`), 사건은
+  NPC 실타래 이벤트와 기억 그래프 사실로, 현재 직업·연봉은 장면 프롬프트의 인물 묘사로 들어간다
 - 같은 시드 = 같은 운. `forcedFirstOccupation`으로 "첫 직장만 바꾸면?"을 비교할 수 있다(`cli.ts`의 Roy)
 - 다음 단계: 결혼 모델의 `FIXED_ASSUMPTIONS`(학력 분포, 해고율, 재취업률, 장애율, 전업주부 여부)를 이 모델의
   출력으로 교체하고 둘 다 재보정

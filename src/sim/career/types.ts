@@ -109,6 +109,23 @@ export interface CareerOutcome {
   months?: MonthTrace[];
 }
 
+export type CareerEventKind =
+  | 'schoolExit'
+  | 'enlisted'
+  | 'discharged'
+  | 'hired'
+  | 'jobToJob'
+  | 'promoted'
+  | 'promotedToManager'
+  | 'quit'
+  | 'laidOff'
+  | 'plantClosing'
+  | 'disabled'
+  | 'leftLaborForce'
+  | 'businessStarted'
+  | 'businessClosed'
+  | 'retired';
+
 export interface MonthTrace {
   ageMonths: number;
   year: number;
@@ -118,6 +135,7 @@ export interface MonthTrace {
   logWage?: number;
   netWorth: number;
   event?: string;
+  eventKind?: CareerEventKind;
 }
 
 export interface SimulateCareerOptions {

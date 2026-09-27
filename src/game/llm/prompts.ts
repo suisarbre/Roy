@@ -198,8 +198,11 @@ ${OUTCOME_IMPACT_INSTRUCTION}
 
 ${languageInstruction(language)} ${OMIT_OPTIONAL_FIELDS_INSTRUCTION}`;
 
+  const sketches = request.involvedNpcSketches?.length
+    ? `\nWho they are (facts from the life simulation — keep their voice and circumstances consistent with this):\n${request.involvedNpcSketches.map((s) => `- ${s}`).join('\n')}\n`
+    : '';
   const user = `People present in this scene: ${request.involvedNpcNames.join(', ') || 'someone'}
-
+${sketches}
 Scene so far (oldest to newest):
 ${jsonBlock(request.exchangesSoFar)}
 

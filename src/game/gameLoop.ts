@@ -1,3 +1,4 @@
+import { describeNpcForScene } from './npcSketch';
 import { advanceClock } from './clock';
 import { getOpenEraEventCandidates, monthsRemainingInEraEventWindow, rollEraEventTrigger } from './eraEvents';
 import { getSkipNarrative, type Language } from '../i18n';
@@ -648,9 +649,15 @@ export async function runSceneExchange(state: GameState, playerInput: string, de
   });
   const dedupedMemories = [...new Map(recalledMemories.map((memory) => [memory.id, memory])).values()];
 
+  const involvedNpcSketches = scene.involvedNpcIds
+    .map((id) => state.npcs[id])
+    .filter((npc): npc is NonNullable<typeof npc> => Boolean(npc))
+    .map((npc) => describeNpcForScene(npc, state.clock.date));
+
   const response = await deps.model.runSceneTurn({
     clock: state.clock,
     involvedNpcNames,
+    involvedNpcSketches,
     exchangesSoFar: scene.exchanges,
     playerInput,
     recalledMemories: dedupedMemories,

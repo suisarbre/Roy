@@ -14,6 +14,13 @@ Roy 말고도 사람들이 각자 살아가고, 그 삶이 Roy의 세계와 부�
 | `collision.ts` | `detectNpcCollisions` — NPC 보드에서 난 현저한(`salience >= 0.5`) 이벤트를 골라낸다. "감지"까지만 여기 범위이고, 실제로 장면화할지는 5~7단계(현저성/스토리텔러) 몫. |
 | `demo.ts` | `npm run sim:npc` 진입점 — 통계 검증이 아니라(비교할 실측 타깃이 없음) "메커니즘이 재현 가능하고 의도대로 동작하는가"만 확인하는 데모. |
 
+## 성격 있는 NPC (`sim/person`)
+
+`NpcSimRecord.profile`이 있으면 이 NPC는 기질·배경을 가진 사람이다: 관심 배분(temperament)이 성격에서
+나오고, 취업·실직·승진·창업은 경력 행위자 모델(`src/sim/career`)에서, 사건은 실타래 이벤트로 흘러
+`collision.ts`에 들어간다. 자세한 건 `src/sim/person/README.md`. 데모 5절이 성격만 다른 두 동네 친구를
+1978–2000년 동안 굴려 보여준다.
+
 ## 실행
 
 ```bash

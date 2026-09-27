@@ -2,6 +2,7 @@ import { createRng } from '../sim/rng';
 import { decayAndCheckInNpcs } from './npcCheckIn';
 import { weatherContent, weatherMemoryGraph } from './memoryWeathering';
 import { createNpc } from './npcImportance';
+import { describeNpcForScene } from './npcSketch';
 import type { GameDate, MemoryGraph, MemoryNode, NpcId } from './types';
 
 /**
@@ -77,6 +78,48 @@ function checkBirthYearHeuristics(failures: string[]): void {
   }
 }
 
+/** 기질·배경 프로필: 생성 때 붙고, 같은 난수면 같은 사람이며, 남성 NPC는 경력 사건을 구체적 사실로
+ *  남기고(옛 "lost their job" 카운터 문장과 중복 없이), 장면 묘사에 성격·학력·일이 들어간다. */
+function checkProfiles(failures: string[]): void {
+  const originalRandom = Math.random;
+  try {
+    const make = (seed: number) => {
+      Math.random = createRng(seed);
+      return createNpc({ id: 'friend', name: 'Eddie', relationType: 'friend', firstAppearedTurn: 0, memoryNodeId: 'n', royAgeYears: 20, currentDate: { year: 1982, month: 1 } });
+    };
+    const a = make(11);
+    const b = make(11);
+    check('NPC는 생성 때 프로필을 받는다', !!a.profile, failures);
+    check('같은 난수면 같은 프로필(재현 가능)', JSON.stringify(a.profile) === JSON.stringify(b.profile), failures);
+
+    const careerFacts: string[] = [];
+    let duplicateOldStyle = false;
+    let sketch = '';
+    for (let i = 0; i < 12; i++) {
+      Math.random = createRng(100 + i);
+      let npc = createNpc({ id: `m${i}`, name: `M${i}`, relationType: 'spouse', firstAppearedTurn: 0, memoryNodeId: `n${i}`, royAgeYears: 20, currentDate: { year: 1982, month: 1 } });
+      if (npc.sex !== 'male') npc = { ...npc, sex: 'male', profile: npc.profile && { ...npc.profile, sex: 'male' } };
+      let npcs: Record<NpcId, typeof npc> = { [npc.id]: npc };
+      let date: GameDate = { year: 1982, month: 1 };
+      for (let year = 0; year < 20; year++) {
+        const result = decayAndCheckInNpcs(npcs, 12, addMonths(date, 12));
+        date = addMonths(date, 12);
+        npcs = result.npcs as typeof npcs;
+        for (const node of result.delta.newNodes) {
+          if (/laid off|plant|business|promoted to manager|enlisted|disability|gave up/.test(node.content)) careerFacts.push(node.content);
+          if (node.content.includes('lost their job.') || node.content.includes('started a new job.')) duplicateOldStyle = true;
+        }
+      }
+      if (i === 0) sketch = describeNpcForScene(npcs[npc.id], date);
+    }
+    check(`남성 NPC 12명 × 20년에서 경력 사건 사실이 나온다 (실제 ${careerFacts.length}건)`, careerFacts.length > 0, failures);
+    check('경력 모델이 있으면 옛 카운터 문장(lost their job / started a new job)을 쓰지 않는다', !duplicateOldStyle, failures);
+    check(`장면 묘사에 이름·관계·학력이 들어간다 ("${sketch}")`, sketch.startsWith('M0 (spouse,') && /degree|school|college|PhD|dropout/.test(sketch), failures);
+  } finally {
+    Math.random = originalRandom;
+  }
+}
+
 function makeNode(id: string, content: string, createdAtTurn: number, accessTurns: number[]): MemoryNode {
   return { id, type: 'event', content, createdAtTurn, accessTurns };
 }
@@ -109,6 +152,7 @@ function main(): void {
 
   checkNpcCheckIn(failures);
   checkBirthYearHeuristics(failures);
+  checkProfiles(failures);
   checkWeathering(failures);
 
   console.log(`NPC 체크인 + 기억 풍화 스모크 테스트 — ${failures.length === 0 ? 'PASS' : `FAIL (${failures.length}건)`}`);

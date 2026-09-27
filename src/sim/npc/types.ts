@@ -2,6 +2,7 @@ import type { GameDate, NpcId, NpcRelationType } from '../../game/types';
 import type { PolicyBot } from '../attend';
 import type { Sex } from '../data';
 import type { LifeCourseState } from '../lifeCourse';
+import type { PersonProfile } from '../person/profile';
 import type { SharedResources, Thread } from '../threads/types';
 
 /**
@@ -82,4 +83,7 @@ export interface NpcSimRecord {
    *  자체가 사라지는 게 아니라 tick이 멈출 뿐 — 재승격 시 이어서 진행). */
   board?: NpcBoard;
   temperament: NpcTemperament;
+  /** 기질·배경(sim/person). 있으면 경력은 경력 행위자 모델에서, 관심 배분은 성격에서 나온다.
+   *  없으면(옛 저장·테스트) 예전처럼 lifeCourse.ts의 기저 해저드만 쓴다. */
+  profile?: PersonProfile;
 }

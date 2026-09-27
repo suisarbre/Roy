@@ -3,7 +3,7 @@ import { createRng, type Rng } from '../rng';
 import { gaussian } from '../marriage/population';
 import { OCCUPATIONS, OCCUPATION_BY_ID, SCHOOLING_RANK, STUDENT_JOBS, type Occupation, type OccupationId } from './occupations';
 import { CAREER_STRUCTURE as S, type CareerParams } from './params';
-import type { BusinessSpell, CareerOutcome, JobSpell, LaborState, MonthTrace, SeparationReason, SimulateCareerOptions, Worker, YearRecord } from './types';
+import type { BusinessSpell, CareerEventKind, CareerOutcome, JobSpell, LaborState, MonthTrace, SeparationReason, SimulateCareerOptions, Worker, YearRecord } from './types';
 
 /**
  * 한 사람의 16세~은퇴 후까지를 월 단위로 굴린다. 확률표는 없다 — 사건은 전부 개인 상태(능력·성격·
@@ -284,6 +284,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
     const age = ageMonths / 12;
     const ageYear = Math.floor(age);
     let event: string | undefined;
+    let eventKind: CareerEventKind | undefined;
 
     if (ageMonths % 12 === 0) {
       // 생일: 연간 기록 시작, 영구 충격.
@@ -316,11 +317,11 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         schoolDone = true;
         unemploymentAtSchoolExit = u;
         if (job) endJob(ageMonths, 'schoolExit');
-        event = '학교를 마침';
+        event = '학교를 마침'; eventKind = 'schoolExit';
         const militaryEligible = worker.education === 'highSchool' || worker.education === 'someCollege';
         if (militaryEligible && rng() < S.militaryEnlistShare) {
           startJob(OCCUPATION_BY_ID.military, 0, 0, ageMonths, false);
-          event = '입대';
+          event = '입대'; eventKind = 'enlisted';
         } else {
           state = 'unemployed';
         }
@@ -338,7 +339,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
           rec.earnings += (Math.exp(currentWage()) * S.studentHoursShare) / 12;
           job.tenureMonths += 1;
         }
-        if (months) months.push({ ageMonths, year, month: total % 12, state: 'student', occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth, event });
+        if (months) months.push({ ageMonths, year, month: total % 12, state: 'student', occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth, event, eventKind });
         if (ageMonths % 12 === 11) annualMoney(rec, year, age, true);
         continue;
       }
@@ -354,7 +355,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         const positive = careerEarnings.filter((e) => e > 0);
         const avg = positive.length ? positive.reduce((a, b) => a + b, 0) / Math.max(35, positive.length) : 0;
         socialSecurityMonthly = Math.min(1, S.socialSecurityReplacement * avg) / 12;
-        event = '은퇴';
+        event = '은퇴'; eventKind = 'retired';
       }
     }
 
@@ -383,27 +384,27 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         if (job.termMonthsLeft <= 0) {
           endJob(ageMonths, 'termEnd');
           state = 'unemployed';
-          event = '전역';
+          event = '전역'; eventKind = 'discharged';
         }
       } else if (rng() < disabilityHazard) {
         endJob(ageMonths, 'disability');
         state = 'outOfLaborForce';
         disabled = true;
-        event = '장애';
+        event = '장애'; eventKind = 'disabled';
       } else if (rng() < closureHazard) {
         endJob(ageMonths, 'plantClosing');
         state = 'unemployed';
         rec.displaced = true;
-        event = aero > 0 ? '항공우주 구조조정으로 공장 폐쇄' : '공장 폐쇄·대량 해고';
+        event = aero > 0 ? '항공우주 구조조정으로 공장 폐쇄' : '공장 폐쇄·대량 해고'; eventKind = 'plantClosing';
       } else if (rng() < layoffHazard) {
         endJob(ageMonths, 'layoff');
         state = 'unemployed';
         rec.laidOff = true;
-        event = '해고';
+        event = '해고'; eventKind = 'laidOff';
       } else if (rng() < quitHazard) {
         endJob(ageMonths, 'quit');
         state = 'unemployed';
-        event = '그만둠';
+        event = '그만둠'; eventKind = 'quit';
       } else if (
         age >= 23 &&
         experienceYears >= 2 &&
@@ -419,7 +420,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
         business = { spell, lnIncome: w + S.seQualityIncome * quality - 0.2, annualIncome: 0 };
         wealth -= S.seStartupCapital;
         state = 'selfEmployed';
-        event = '창업';
+        event = '창업'; eventKind = 'businessStarted';
       } else {
         // 재직 중 탐색: 더 나은 짝이 오면 옮긴다.
         const offerRate = p.offerRateEmployed * Math.exp(-p.offerAgeDecline * Math.max(0, age - 18)) * Math.pow(S.UNEMPLOYMENT_REFERENCE / u, 0.5);
@@ -433,7 +434,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
             if (offered > currentWage() + p.switchCost + (sameOcc ? 0 : S.occupationSwitchCost)) {
               endJob(ageMonths, 'jobToJob');
               startJob(nextOcc, rung, match, ageMonths, false);
-              event = `이직: ${nextOcc.label}`;
+              event = `이직: ${nextOcc.label}`; eventKind = 'jobToJob';
             }
           }
         }
@@ -444,7 +445,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
             if (job.tenureMonths + 1 >= auto.afterMonths && job.rung === 0) job.rung = 1;
           } else if (rng() < (p.promotionRate / 12) * Math.exp(p.promotionConscientiousness * t.conscientiousness + 0.3 * t.ability)) {
             job.rung += 1;
-            event = '승진';
+            event = '승진'; eventKind = 'promoted';
           }
         }
         if (
@@ -466,7 +467,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
           job.rung = 0;
           lastOccupation = job.occupation;
           occupationYears = 0;
-          event = '관리자로 승진';
+          event = '관리자로 승진'; eventKind = 'promotedToManager';
         }
       }
     } else if (state === 'selfEmployed' && business) {
@@ -479,7 +480,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
       if (rng() < hazard) {
         closeBusiness(ageMonths, false);
         state = 'unemployed';
-        event = '폐업';
+        event = '폐업'; eventKind = 'businessClosed';
       }
     } else if (state === 'unemployed') {
       monthsUnemployed += 1;
@@ -489,7 +490,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
       const offerRate = Math.min(0.95, p.offerRateUnemployed * (S.UNEMPLOYMENT_REFERENCE / u) * Math.exp(network));
       if (rng() < p.nilfEntry * lowEdu * Math.exp(-0.3 * t.conscientiousness)) {
         state = 'outOfLaborForce';
-        event = '구직 단념';
+        event = '구직 단념'; eventKind = 'leftLaborForce';
       } else if (rng() < offerRate) {
         let occ = drawOccupation(year, ageMonths, true);
         if (options.forcedFirstOccupation && !firstJobForced) {
@@ -502,7 +503,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
           const reservation = lastLogWage - S.reservationDrop - S.reservationDropPerMonth * monthsUnemployed;
           if (firstJob || offered >= reservation) {
             startJob(occ, 0, match, ageMonths, false);
-            event = `취업: ${occ.label}`;
+            event = `취업: ${occ.label}`; eventKind = 'hired';
           }
         }
       }
@@ -534,7 +535,7 @@ export function simulateCareer(worker: Worker, p: CareerParams, seedRng: Rng, op
       else if (state === 'outOfLaborForce') rec.outOfLaborForceMonths += 1;
       if (state !== 'retired') hc -= S.nonemploymentDepreciation / 12;
     }
-    if (months) months.push({ ageMonths, year, month: total % 12, state, occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth + bizEquity, event });
+    if (months) months.push({ ageMonths, year, month: total % 12, state, occupation: job?.occupation.id, logWage: job ? currentWage() : undefined, netWorth: wealth + bizEquity, event, eventKind });
 
     if (ageMonths % 12 === 11) {
       if (business) {

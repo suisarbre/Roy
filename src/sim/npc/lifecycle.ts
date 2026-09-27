@@ -1,6 +1,7 @@
 import type { GameDate } from '../../game/types';
 import { monthlyDeathProbability } from '../data';
-import { addMonths, ageInYearsAt, monthsBetween } from '../gameDate';
+import { addMonths, ageInYearsAt, dateToTotalMonths, monthsBetween } from '../gameDate';
+import { CAREER_EVENT_SALIENCE, careerEventsBetween, careerLifeOf, careerStatusAt, type CareerEvent } from '../person/careerTrack';
 import { createInitialLifeCourseState, respawnMarriageThreadIfStillMarried, tickLifeCourse } from '../lifeCourse';
 import type { Rng } from '../rng';
 import type { ThreadEvent } from '../threads/board';
@@ -17,6 +18,8 @@ export interface CatchUpResult {
   events: ThreadEvent[];
   /** 이번 catchUp 도중 사망했으면 그 날짜. */
   diedAt?: GameDate;
+  /** 이 구간에 일어난 경력 사건(프로필 있는 NPC만, LOD와 무관 — 사실로서 기억 그래프에 들어갈 재료). */
+  careerEvents: CareerEvent[];
 }
 
 /**
@@ -33,7 +36,7 @@ export interface CatchUpResult {
  */
 export function catchUpNpc(npc: NpcSimRecord, currentDate: GameDate, rng: Rng): CatchUpResult {
   const totalMonths = monthsBetween(npc.lastSimulatedAt, currentDate);
-  if (totalMonths <= 0 || !npc.alive) return { npc, events: [] };
+  if (totalMonths <= 0 || !npc.alive) return { npc, events: [], careerEvents: [] };
 
   const hasBoard = npc.lod === 'close' || npc.lod === 'foreground';
   let life = npc.life ?? createInitialLifeCourseState();
@@ -43,14 +46,34 @@ export function catchUpNpc(npc: NpcSimRecord, currentDate: GameDate, rng: Rng): 
   const nextThreadId = () => `${npc.id}-t${threadIdCounter++}`;
   let date = npc.lastSimulatedAt;
 
+  // 경력은 프로필이 있으면 경력 행위자 모델이 진실이다(lifeCourse.ts의 취업 해저드를 덮어쓴다).
+  // 궤적은 lifeSeed로 이미 정해져 있어서 이 구간의 사건을 한 번에 꺼내 월별로 나눠 둔다.
+  const hasCareer = !!npc.profile && !!careerLifeOf(npc.profile);
+  const careerByMonth = new Map<number, CareerEvent[]>();
+  const careerSeen: CareerEvent[] = [];
+  if (hasCareer) {
+    for (const e of careerEventsBetween(npc.profile!, npc.lastSimulatedAt, currentDate)) {
+      const key = dateToTotalMonths(e.date);
+      careerByMonth.set(key, [...(careerByMonth.get(key) ?? []), e]);
+    }
+  }
+
   for (let month = 0; month < totalMonths; month++) {
     const ageYears = ageInYearsAt(npc.birthYear, date);
 
     if (rng() < monthlyDeathProbability(npc.birthYear, npc.sex, ageYears, 1)) {
-      return { npc: { ...npc, life, board, alive: false, lastSimulatedAt: date }, events, diedAt: date };
+      return { npc: { ...npc, life, board, alive: false, lastSimulatedAt: date }, events, diedAt: date, careerEvents: careerSeen };
     }
 
     const { newThread, removeThreadId } = tickLifeCourse(life, ageYears, date, month, nextThreadId, rng);
+    const careerEvents = careerByMonth.get(dateToTotalMonths(date)) ?? [];
+    careerSeen.push(...careerEvents);
+    if (hasCareer) {
+      const status = careerStatusAt(npc.profile!, date);
+      life.employed = status?.state === 'employed' || status?.state === 'selfEmployed';
+      life.jobsHeldCount = (npc.life?.jobsHeldCount ?? 0) + countJobStarts(careerByMonth, npc.lastSimulatedAt, date);
+      life.unemploymentMonthsRemaining = 0;
+    }
 
     if (hasBoard) {
       board ??= { threads: [], resources: { money: 0, stress: 0, attentionBudget: DEFAULT_NPC_ATTENTION_BUDGET } };
@@ -70,6 +93,11 @@ export function catchUpNpc(npc: NpcSimRecord, currentDate: GameDate, rng: Rng): 
 
       board = { threads, resources: result.resources };
       events.push(...result.events);
+      // 경력 사건도 같은 이벤트 흐름으로 — collision.ts가 현저한 것(해고·공장 폐쇄 등)을 골라낸다.
+      for (const e of careerEvents) {
+        const { salience, domain } = CAREER_EVENT_SALIENCE[e.kind];
+        events.push({ threadId: `${npc.id}-career`, domain, label: e.text, salience });
+      }
     }
     // acquaintance는 board가 없다 — newThread가 생겨도(예: 결혼) 실타래에 올리지 않고
     // life 쪽 카운터(maritalStatus 등)만 유지한다(NpcLod 문서 참고).
@@ -77,5 +105,16 @@ export function catchUpNpc(npc: NpcSimRecord, currentDate: GameDate, rng: Rng): 
     date = addMonths(date, 1);
   }
 
-  return { npc: { ...npc, life, board, lastSimulatedAt: currentDate }, events };
+  return { npc: { ...npc, life, board, lastSimulatedAt: currentDate }, events, careerEvents: careerSeen };
+}
+
+/** 구간 시작부터 이 달까지(포함) 새로 시작한 일자리 수 — 취업·이직·창업·입대. */
+function countJobStarts(careerByMonth: ReadonlyMap<number, readonly CareerEvent[]>, from: GameDate, through: GameDate): number {
+  let count = 0;
+  const end = dateToTotalMonths(through);
+  for (const [month, list] of careerByMonth) {
+    if (month < dateToTotalMonths(from) || month > end) continue;
+    count += list.filter((e) => e.kind === 'hired' || e.kind === 'jobToJob' || e.kind === 'businessStarted' || e.kind === 'enlisted').length;
+  }
+  return count;
 }

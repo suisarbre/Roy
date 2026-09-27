@@ -1,4 +1,6 @@
 import { randomPolicy } from '../sim/attend';
+import { CAREER_EVENT_SALIENCE, careerLifeOf, describeCareerEvent } from '../sim/person/careerTrack';
+import { temperamentFromTraits } from '../sim/person/temperament';
 import { catchUpNpc } from '../sim/npc/lifecycle';
 import type { NpcLod, NpcSimRecord } from '../sim/npc/types';
 import { createInitialLifeCourseState } from '../sim/lifeCourse';
@@ -34,11 +36,15 @@ function toSimRecord(npc: Npc): NpcSimRecord {
     lastSimulatedAt: npc.lastSimulatedAt,
     life: npc.lifeCourse,
     board: npc.simBoard,
-    temperament: { attend: randomPolicy, patience: 0.5 },
+    temperament: npc.profile ? temperamentFromTraits(npc.profile.traits) : { attend: randomPolicy, patience: 0.5 },
+    profile: npc.profile,
   };
 }
 
-function describeLifeCourseChanges(name: string, before: LifeCourseState, after: LifeCourseState): string[] {
+/** 체크인 사실로 올릴 경력 사건의 현저성 문턱 — 평범한 이직·승진은 기억 그래프에 안 올린다. */
+const CAREER_FACT_SALIENCE = 0.5;
+
+function describeLifeCourseChanges(name: string, before: LifeCourseState, after: LifeCourseState, includeEmployment: boolean): string[] {
   const facts: string[] = [];
 
   if (after.divorceCount > before.divorceCount) {
@@ -49,6 +55,7 @@ function describeLifeCourseChanges(name: string, before: LifeCourseState, after:
 
   if (!before.isHomeowner && after.isHomeowner) facts.push(`${name} bought a home.`);
 
+  if (!includeEmployment) return facts;
   if (before.employed && !after.employed) {
     facts.push(`${name} lost their job.`);
   } else if (after.employed && after.jobsHeldCount > before.jobsHeldCount) {
@@ -84,7 +91,13 @@ export function runNpcCheckIn(npc: Npc, currentDate: GameDate): NpcCheckInResult
     return { npc: updatedNpc, facts: [`${npc.name} died.`] };
   }
 
-  const facts = result.npc.life ? describeLifeCourseChanges(npc.name, beforeLife, result.npc.life) : [];
+  // 경력 모델이 있는 NPC는 취업/실직을 lifeCourse 카운터 차이가 아니라 실제 사건으로 말한다
+  // ("공장이 문을 닫아 일자리를 잃었다" 같은 구체적인 사실).
+  const hasCareer = !!npc.profile && !!careerLifeOf(npc.profile);
+  const facts = result.npc.life ? describeLifeCourseChanges(npc.name, beforeLife, result.npc.life, !hasCareer) : [];
+  for (const event of result.careerEvents) {
+    if (CAREER_EVENT_SALIENCE[event.kind].salience >= CAREER_FACT_SALIENCE) facts.push(describeCareerEvent(npc.name, event));
+  }
   return { npc: updatedNpc, facts };
 }
 

@@ -1,3 +1,4 @@
+import { sampleProfile } from '../sim/person/profile';
 import type { Sex } from '../sim/data';
 import { createEmptyMemoryGraph } from './types';
 import type { GameDate, MemoryGraph, MemoryGraphDelta, Npc, NpcId, NpcRelationType, ProposedNpc } from './types';
@@ -84,6 +85,8 @@ export function createNpc(params: {
   const importanceScore = BASE_IMPORTANCE_BY_RELATION[params.relationType];
   const importanceTier = importanceScore >= IMPORTANCE_PROMOTION_THRESHOLD ? 'major' : 'minor';
   const { birthYear, sex } = assignBirthYearAndSex(params.relationType, params.royAgeYears, params.currentDate.year);
+  // 기질·배경: Roy의 세계(잉글우드)에 사는 사람으로. 시드는 여기서 한 번만 뽑고 이후 모든 운은 프로필이 재현한다.
+  const profile = sampleProfile(Math.floor(Math.random() * 4294967296), { sex, birthYear, losAngeles: true });
   return {
     id: params.id,
     name: params.name,
@@ -103,6 +106,7 @@ export function createNpc(params: {
     birthYear,
     sex,
     lastSimulatedAt: params.currentDate,
+    profile,
   };
 }
 

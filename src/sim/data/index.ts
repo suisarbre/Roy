@@ -62,3 +62,4 @@ export {
   type MomentKind,
   type DivorceRegime,
 } from './marriage';
+export { FERTILITY_MOMENTS } from './fertility';

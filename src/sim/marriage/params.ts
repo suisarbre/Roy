@@ -52,6 +52,23 @@ export interface MarriageParams {
   homemakerBarrier: number;
   /** 신혼 만족도 가산(설정점 위에서 시작해 서서히 내려옴) — 초기 1~2년 이혼이 적은 모양. */
   honeymoonBoost: number;
+  // ---- 출산 ----
+  /** 희망 자녀 수 평균(대졸 미만). */
+  desireBase: number;
+  /** 대졸 이상의 희망 자녀 수 감소. */
+  desireCollegeDrop: number;
+  /** 원할 때 시도하는 속도(출산 로짓 절편). */
+  birthPace: number;
+  /** 헌신이 높을수록 출산(흔들리는 부부는 미룬다 — Lillard & Waite 1993). */
+  birthCommitment: number;
+  /** 금전 스트레스가 출산을 미루는 정도(Lindo 2010: 실직 후 완결 출산 −0.10). */
+  birthStressAversion: number;
+  /** 자녀 1명당 헌신(떠나기 어려워짐). */
+  childInvestment: number;
+  /** 6세 미만 자녀 1명당 양육 스트레스(대립 쪽으로). */
+  youngChildStrain: number;
+  /** 출산 직후 만족도 하락(부부 공유). */
+  postBirthDip: number;
   /** 투자: 결혼 연수 log1p당 헌신 — 세월·자녀·집이 쌓여 떠나기 어려워지는 속도. 해체 시점 분포의 모양. */
   investmentPerLogYear: number;
 }
@@ -83,6 +100,14 @@ export const FREE_PARAMS: readonly FreeParamSpec[] = [
   { name: 'homemakerBarrier', min: 0, max: 4, drives: '전업주부 null' },
   { name: 'investmentPerLogYear', min: 0, max: 2.5, drives: '5·10년 대 평생 해체 비율(시점 분포)' },
   { name: 'honeymoonBoost', min: 0, max: 3, drives: '5년 대 10년 해체 비율(신혼 효과)' },
+  { name: 'desireBase', min: 0.5, max: 4, drives: '평균 자녀 수' },
+  { name: 'desireCollegeDrop', min: 0, max: 2.5, drives: '대졸 무자녀·자녀 수' },
+  { name: 'birthPace', min: -6, max: 4, drives: '자녀 수 분포(원하는 만큼 낳는가)' },
+  { name: 'birthCommitment', min: 0, max: 2, drives: '흔들리는 부부의 출산 미룸' },
+  { name: 'birthStressAversion', min: 0, max: 3, drives: '실직 후 완결 출산 변화' },
+  { name: 'childInvestment', min: 0, max: 2, drives: '자녀의 이혼 억제' },
+  { name: 'youngChildStrain', min: 0, max: 1.5, drives: '어린 자녀 양육 스트레스' },
+  { name: 'postBirthDip', min: 0, max: 1.5, drives: '출산 후 만족도 하락' },
 ];
 
 /** 보정 전 초기값(대략적인 직관). calibratedParams.ts가 있으면 그쪽을 쓴다. */
@@ -104,6 +129,14 @@ export const INITIAL_PARAMS: MarriageParams = {
   homemakerBarrier: 0.5,
   investmentPerLogYear: 0.8,
   honeymoonBoost: 0.6,
+  desireBase: 2.3,
+  desireCollegeDrop: 0.7,
+  birthPace: 0,
+  birthCommitment: 0.3,
+  birthStressAversion: 0.5,
+  childInvestment: 0.3,
+  youngChildStrain: 0.2,
+  postBirthDip: 0.3,
 };
 
 // ---- 구조 상수(척도 고정) ----
@@ -153,6 +186,22 @@ export const STRUCTURE = {
   SINGLE_INCOME_STRAIN: 0.3,
   /** 남편 본인의 실직 수치심(전통성 비례). */
   HUSBAND_SHAME_TRADITIONALISM: 0.3,
+  /** 희망 자녀 수의 개인차(표준편차)와 전통성 효과. */
+  DESIRE_SD: 0.9,
+  DESIRE_TRADITIONALISM: 0.4,
+  /** 희망 수를 채운 뒤 계획 외 출산의 상대 확률. */
+  UNPLANNED_BIRTH_RATIO: 0.03,
+  /** 출산 간격 최소 개월(임신 9개월 + 산후). */
+  MIN_BIRTH_SPACING_MONTHS: 15,
+  /** 자녀의 결속 효과가 줄어들기 시작하는 나이(개월)와 18세 때 남는 비율 — 어린 자녀일수록
+   *  이혼을 더 막는다(Lillard & Waite 1993). */
+  CHILD_BOND_FULL_UNTIL_MONTHS: 72,
+  CHILD_BOND_FLOOR: 0.1,
+  /** 3세 미만 자녀의 추가 결속 배수 — "아기가 어릴 때는 떠나지 않는다". */
+  INFANT_BOND_MULTIPLIER: 1.6,
+  INFANT_MONTHS: 36,
+  /** "어린 자녀" 기준(양육 스트레스). */
+  YOUNG_CHILD_MONTHS: 72,
   /** 결혼 후 만족도 설정점(0 기준). */
   SET_POINT: 0,
 } as const;
@@ -179,6 +228,12 @@ export const FIXED_ASSUMPTIONS = {
   monthlyReemployment: 0.15,
   /** 장애 → 복귀 월간 확률(평균 약 4년) — 가정. */
   monthlyDisabilityRecovery: 0.02,
+  /** 나이별 월간 출산 가능성(가임력 × 임신 유지) — 30세까지 평탄, 이후 선형 감소해 45세에 0.
+   *  단순화된 곡선(가정). 실제 월 수태 확률은 20대에 0.2 안팎이지만 여기선 "시도하면 이번 달에
+   *  출산으로 이어질" 확률을 뭉뚱그렸다. */
+  fecundityPeakMonthly: 0.12,
+  fecundityDeclineStartAge: 30,
+  fecundityEndAge: 45,
   /** 남편 출생연도 범위(NLSY79). */
   husbandBirthYears: [1957, 1964] as const,
 } as const;

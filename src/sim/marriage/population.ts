@@ -82,5 +82,9 @@ export function sampleCouple(rng: Rng): Couple {
   const homemakerLogit = logit(FIXED_ASSUMPTIONS.homemakerShare) + 0.5 * wife.traits.traditionalism - 0.5 * (wifeEducation === 'bachelorsOrMore' ? 1 : 0);
   const wifeIsHomemaker = rng() < sigmoid(homemakerLogit);
 
-  return { husband, wife, marriedAtMonth, husbandAgeAtMarriage, wifeAgeAtMarriage, wifeIsHomemaker };
+  // 희망 자녀 수: 모델 파라미터(desireBase 등)에 의존하므로 여기선 표준정규 잡음만 뽑아 두고,
+  // 실제 값은 model.ts의 desiredChildrenFor가 파라미터와 합쳐 계산한다(공통 난수 유지).
+  const desiredChildren = gaussian(rng);
+
+  return { husband, wife, marriedAtMonth, husbandAgeAtMarriage, wifeAgeAtMarriage, wifeIsHomemaker, desiredChildren };
 }

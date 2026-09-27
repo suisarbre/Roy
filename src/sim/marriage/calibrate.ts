@@ -17,6 +17,9 @@ import { gaussian } from './population';
  *   채택, 한 바퀴 동안 개선이 없으면 step을 절반으로.
  * - 최적화 3단계(결합 이동): 넬더–미드 심플렉스 — 투자·신혼 효과를 올리면서 떠남 절편도 같이
  *   올려야 하는 것처럼 여러 축을 동시에 움직여야 나아지는 방향을 좌표별 탐색은 못 찾는다.
+ * - 4단계(드문 사건 정밀 조정): 장애처럼 드문 사건에 묶인 파라미터는 보정 표본(1만 쌍)에서 우연에
+ *   맞춰진다(실제로 supportSympathy가 2.46까지 가서 대규모 표본에선 장애 위험비 0.67). 보정·검증과
+ *   다른 시드(5, 7)의 3만 쌍 × 2로 해당 적률만 이분법으로 다시 맞춘다. --refine-only면 이 단계만.
  * - 시작점: 기존 calibratedParams.ts가 있으면 거기서 이어서(웜 스타트), --fresh면 INITIAL_PARAMS.
  * - 결과는 calibratedParams.ts로 저장된다(커밋되는 산출물).
  *
@@ -52,6 +55,12 @@ function main(): void {
   const mu = 5;
   const weights = Array.from({ length: mu }, (_, i) => Math.log(mu + 0.5) - Math.log(i + 1));
   const weightSum = weights.reduce((a, b) => a + b, 0);
+
+  if (process.argv.includes('--refine-only')) {
+    const refined = refineRareEventParams({ ...INITIAL_PARAMS, ...CALIBRATED_PARAMS });
+    writeParams(refined, NaN, '--refine-only');
+    return;
+  }
 
   const targets = buildTargets();
   const evaluate = (v: readonly number[]) => loss(measure(fromVector(v), { n, seed }), targets);
@@ -158,29 +167,65 @@ function main(): void {
     console.log(`nelder-mead 완료 best=${best.loss.toFixed(2)}`);
   }
 
-  const params = fromVector(best.v);
+  // ---- 4단계: 드문 사건 정밀 조정 ----
+  const params = refineRareEventParams(fromVector(best.v));
+
+  writeParams(params, best.loss, `--n=${n} --gens=${generations} --sweeps=${sweeps} --nm=${nmEvals} --seed=${seed}`);
+}
+
+/** 드문 사건 적률 ↔ 그 적률을 주로 움직이는 파라미터(단조 관계). */
+const RARE_EVENT_REFINEMENTS: { param: keyof MarriageParams; momentKey: string; target: number; increasingEffect: boolean }[] = [
+  // 연민이 클수록 장애 후 이혼 위험비는 내려간다.
+  { param: 'supportSympathy', momentKey: 'rr_disability', target: 1, increasingEffect: false },
+];
+
+function refineRareEventParams(start: MarriageParams): MarriageParams {
+  const params = { ...start };
+  const big = (p: MarriageParams, key: string) =>
+    [5, 7].map((seed) => measure(p, { n: 30000, seed }).values[key]).reduce((a, b) => a + b, 0) / 2;
+  for (const r of RARE_EVENT_REFINEMENTS) {
+    const spec = FREE_PARAMS.find((s) => s.name === r.param)!;
+    let lo = spec.min;
+    let hi = spec.max;
+    for (let k = 0; k < 8; k++) {
+      const mid = (lo + hi) / 2;
+      const v = big({ ...params, [r.param]: mid }, r.momentKey);
+      const tooHigh = v > r.target;
+      // 효과가 감소 방향이면 값이 목표보다 높을 때 파라미터를 올려야 한다.
+      if (tooHigh !== r.increasingEffect) lo = mid;
+      else hi = mid;
+      console.log(`refine ${r.param}=${mid.toFixed(3)} → ${r.momentKey}=${v.toFixed(3)}`);
+    }
+    params[r.param] = (lo + hi) / 2;
+  }
+  return params;
+}
+
+function writeParams(params: MarriageParams, lossValue: number, argsLabel: string): void {
   // 자유 파라미터만이 아니라 전체를 쓴다 — 고정값(INITIAL_PARAMS)이 빠지면 undefined → NaN이 되어
   // 모든 행동이 조용히 '중립'으로 떨어진다(실제로 겪은 버그).
   const freeNames = new Set(FREE_PARAMS.map((spec) => spec.name));
+  const refined = new Set(RARE_EVENT_REFINEMENTS.map((r) => r.param));
   const body = (Object.keys(params) as (keyof MarriageParams)[])
     .map((name) => {
       const spec = FREE_PARAMS.find((s) => s.name === name);
-      const note = freeNames.has(name) ? spec!.drives : '고정(보정 대상 아님)';
+      const note = refined.has(name) ? `${spec!.drives} (4단계 대규모 표본 정밀 조정)` : freeNames.has(name) ? spec!.drives : '고정(보정 대상 아님)';
       return `  ${name}: ${Number(params[name].toFixed(4))}, // ${note}`;
     })
     .join('\n');
+  const lossNote = Number.isFinite(lossValue) ? `보정 loss(표준화 제곱 오차 합) = ${lossValue.toFixed(2)}.` : '드문 사건 정밀 조정만 다시 실행.';
   const file = `import type { MarriageParams } from './params';
 
 /**
- * \`npm run sim:marriage:calibrate -- --n=${n} --gens=${generations} --sweeps=${sweeps} --nm=${nmEvals} --seed=${seed}\`가 생성한 파일 — 손으로 고치지 말 것.
- * 보정 loss(표준화 제곱 오차 합, 적률 17개) = ${best.loss.toFixed(2)}. 표본 외 검증은 \`npm run sim:marriage\`.
+ * \`npm run sim:marriage:calibrate -- ${argsLabel}\`가 생성한 파일 — 손으로 고치지 말 것.
+ * ${lossNote} 표본 외 검증은 \`npm run sim:marriage\`.
  */
 export const CALIBRATED_PARAMS: MarriageParams = {
 ${body}
 };
 `;
   writeFileSync(new URL('./calibratedParams.ts', import.meta.url), file);
-  console.log(`\n최종 loss=${best.loss.toFixed(2)} → src/sim/marriage/calibratedParams.ts 저장`);
+  console.log(`\n→ src/sim/marriage/calibratedParams.ts 저장`);
 }
 
 main();

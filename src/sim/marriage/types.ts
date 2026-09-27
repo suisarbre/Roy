@@ -41,6 +41,9 @@ export interface Couple {
   wifeAgeAtMarriage: number;
   /** 전업주부 여부 — Killewald(2016)상 이혼 위험에 대한 순효과는 ≈0이어야 한다. */
   wifeIsHomemaker: boolean;
+  /** 희망 자녀 수의 개인차 잡음(표준정규). 실제 희망 수는 model.ts의 desiredChildrenFor가
+   *  학력·전통성·파라미터와 합쳐 계산한다 — 파라미터가 바뀌어도 같은 부부가 나오게(공통 난수). */
+  desiredChildren: number;
 }
 
 export type EmploymentState = 'employed' | 'unemployed' | 'disabled';
@@ -68,6 +71,11 @@ export interface MonthRecord {
   divorcedThisMonth: boolean;
   /** 누가 떠났나(이혼한 달만). */
   leaver?: 'husband' | 'wife';
+  /** 이번 달까지 태어난 자녀 수(이번 달 출생 포함). */
+  childrenCount: number;
+  /** 막내 나이(개월). 자녀가 없으면 undefined. */
+  youngestChildAgeMonths?: number;
+  birthThisMonth: boolean;
 }
 
 export interface MarriageOutcome {
@@ -76,6 +84,11 @@ export interface MarriageOutcome {
   /** 결혼 지속 개월 수(이혼·사별·관측 종료 시점까지). */
   durationMonths: number;
   months: MonthRecord[];
+  /** 결혼 중 출생한 달(결혼 후 경과 개월). */
+  birthDurations: number[];
+  /** 아내가 45세가 되기 전에 결혼이 (이혼 포함) 끝났거나 관측이 끝났는지와 무관하게, 아내가 45세까지
+   *  생존했는가 — 완결 출산 집계의 모집단. */
+  wifeReached45: boolean;
 }
 
 export interface SimulateOptions {

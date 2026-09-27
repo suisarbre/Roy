@@ -1,4 +1,4 @@
-import { MARRIAGE_MOMENTS } from '../data';
+import { FERTILITY_MOMENTS, MARRIAGE_MOMENTS } from '../data';
 import { createRng } from '../rng';
 import { simulateCouple } from './model';
 import type { MarriageParams } from './params';
@@ -17,13 +17,19 @@ import { EDUCATIONS, type Couple, type Education, type JobShockKind, type MonthR
  *   검증에서 경로를 끊어도 1.15가 남는 걸로 발견).
  * - 결혼 나이 기울기, 부모 이혼·성격 오즈비: "10년 안 이혼" 이진 결과에 대한 단변량 로지스틱
  *   회귀(남편 기준). 10년 전에 사별·중도절단된 부부는 제외.
+ * - 출산: 아내가 45세까지 산 결혼의 결혼 중 출산 수(분포, 평균, 아내 학력별). 출산 후 만족도 변화는
+ *   첫 출산 3개월 전 → 12개월 후 변화에서 같은 결혼 연차 무자녀 부부의 같은 길이 변화를 빼고 만족도
+ *   표준편차로 나눈 값. 실직 후 출산 변화는 사건 기준 비교: 남편 실직(해고·공장 폐쇄, 아내 40세 전)
+ *   시점부터 아내 45세·결혼 종료까지의 출산 수를, 실직을 겪지 않은 부부의 같은 조건(아내 학력 × 그
+ *   시점 자녀 수 × 아내 나이대) 기준점 이후 출산 수와 비교. "평생 실직 여부"로 나누면 오래 결혼한
+ *   부부가 실직도 출산도 많이 겪는 노출 기간 편향으로 +0.66이 나왔다(실제로 겪음).
  */
 
 const MAX_DURATION_MONTHS = 12 * 60;
 const SHOCK_WINDOW_MONTHS = 36;
 
 function momentValues(id: string): Readonly<Record<string, number>> {
-  const moment = MARRIAGE_MOMENTS.find((m) => m.id === id);
+  const moment = [...MARRIAGE_MOMENTS, ...FERTILITY_MOMENTS].find((m) => m.id === id);
   if (!moment) throw new Error(`moment ${id} not found`);
   return moment.values;
 }
@@ -33,6 +39,10 @@ export interface Target {
   label: string;
   target: number;
   tolerance: number;
+  /** 모델과 목표의 정의가 구조적으로 어긋나는 알려진 격차. 보정 loss에는 그대로 들어가지만(보정기는
+   *  계속 맞추려 함) 검증 판정에서는 FAIL 대신 KNOWN으로 표시하고 이유를 보인다. 허용오차를 몰래
+   *  넓히지 않기 위한 장치. */
+  knownGap?: string;
 }
 
 /** 보정 목표 17개 — 숫자는 전부 MARRIAGE_MOMENTS에서 읽는다(중복 정의 없음). */
@@ -44,6 +54,12 @@ export function buildTargets(): Target[] {
   const shock = momentValues('divorceRisk.afterSpouseJobLoss');
   const pd = momentValues('divorceOdds.parentalDivorce');
   const big5 = momentValues('divorceOdds.bigFivePerSD');
+  const parity = momentValues('childrenEverBorn.distributionAge46');
+  const fertEdu = momentValues('childrenEverBorn.byEducation');
+  const tp = momentValues('maritalSatisfaction.transitionToParenthood');
+  const displaced = momentValues('fertility.afterHusbandDisplacement');
+  const netDip =
+    (tp.mothers_pregnancyTo12m - tp.nonparentMothers_sameWindow + (tp.fathers_pregnancyTo12m - tp.nonparentFathers_sameWindow)) / 2;
 
   return [
     { key: 'disruption5y', label: '첫 결혼 5년 내 해체', target: disruption.within5y, tolerance: 0.02 },
@@ -65,12 +81,39 @@ export function buildTargets(): Target[] {
     { key: 'or_openness', label: '개방성 1SD 오즈비', target: big5.openness, tolerance: 0.06 },
     { key: 'or_conscientiousness', label: '성실성 1SD 오즈비', target: big5.conscientiousness, tolerance: 0.04 },
     { key: 'or_agreeableness', label: '친화성 1SD 오즈비', target: big5.agreeableness, tolerance: 0.04 },
+    // ---- 출산 (전체 여성 기준 분포와 결혼 중 출산을 비교 — 허용오차 넓게, fertility.ts 참고) ----
+    { key: 'parity_0', label: '자녀 0명', target: parity.none, tolerance: 0.035 },
+    {
+      key: 'parity_1',
+      label: '자녀 1명',
+      target: parity.one,
+      tolerance: 0.035,
+      knownGap: '모델은 첫 결혼 안의 출산만 센다 — "한 명 낳고 이혼"한 뒤 새 관계에서의 출산이 빠져 1명이 과대.',
+    },
+    { key: 'parity_2', label: '자녀 2명', target: parity.two, tolerance: 0.035 },
+    { key: 'parity_3', label: '자녀 3명', target: parity.three, tolerance: 0.035 },
+    { key: 'parity_4plus', label: '자녀 4명 이상', target: parity.fourPlus, tolerance: 0.035 },
+    { key: 'parity_mean', label: '평균 자녀 수', target: parity.mean, tolerance: 0.15 },
+    {
+      key: 'kids_lessThanHighSchool',
+      label: '평균 자녀 — 고졸 미만(아내)',
+      target: fertEdu.mean_lessThanHighSchool,
+      tolerance: 0.2,
+      knownGap: '목표에는 결혼 전·결혼 밖 출산(10대 출산 등)이 포함된다 — 고졸 미만에서 가장 크고, 모델에는 없다.',
+    },
+    { key: 'kids_highSchool', label: '평균 자녀 — 고졸(아내)', target: fertEdu.mean_highSchool, tolerance: 0.2 },
+    { key: 'kids_someCollege', label: '평균 자녀 — 대학 중퇴(아내)', target: fertEdu.mean_someCollege, tolerance: 0.2 },
+    { key: 'kids_bachelorsOrMore', label: '평균 자녀 — 대졸 이상(아내)', target: fertEdu.mean_bachelorsOrMore, tolerance: 0.2 },
+    { key: 'childless_lessThanHighSchool', label: '무자녀 — 고졸 미만(아내)', target: fertEdu.childless_lessThanHighSchool, tolerance: 0.05 },
+    { key: 'childless_bachelorsOrMore', label: '무자녀 — 대졸 이상(아내)', target: fertEdu.childless_bachelorsOrMore, tolerance: 0.05 },
+    { key: 'postBirthSatisfaction', label: '첫 출산 후 1년 만족도 순변화(SD)', target: netDip, tolerance: 0.07 },
+    { key: 'displacementFertility', label: '남편 실직 후 완결 출산 변화(명)', target: displaced.completedFertilityChange, tolerance: 0.12 },
   ];
 }
 
 // ---- 집계기 ----
 
-type ExposureKey = 'notFullTime' | 'homemaker' | JobShockKind;
+type ExposureKey = 'notFullTime' | 'homemaker' | 'youngChild' | 'olderChild' | JobShockKind;
 
 class StandardizedRate {
   /** 기준 집단의 층별 [개월, 이혼]. */
@@ -156,7 +199,34 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     layoff: new StandardizedRate(),
     plantClosing: new StandardizedRate(),
     disability: new StandardizedRate(),
+    youngChild: new StandardizedRate(),
+    olderChild: new StandardizedRate(),
   };
+  const parityCounts = [0, 0, 0, 0, 0];
+  let parityTotal = 0;
+  let paritySum = 0;
+  const kidsByEdu: Record<Education, [number, number, number]> = {
+    lessThanHighSchool: [0, 0, 0],
+    highSchool: [0, 0, 0],
+    someCollege: [0, 0, 0],
+    bachelorsOrMore: [0, 0, 0],
+  }; // [부부 수, 자녀 합, 무자녀 수]
+  // 실직 후 출산(사건 기준): 층(아내 학력|그 시점 자녀 수|아내 나이대)별 [노출 수, 이후 출산 합, 대조 수, 대조 이후 출산 합]
+  const displacement = new Map<string, [number, number, number, number]>();
+  let displacementEvents: { stratum: string; atDuration: number }[] = [];
+  // 출산 후 만족도: 부부별 만족도 시계열 버퍼 + 무자녀 기준 변화(결혼 연차별)
+  const satSeries = new Float64Array(12 * 60 + 2);
+  let satLen = 0;
+  let displacedBefore40 = false;
+  const stratumAt = (couple: Couple, duration: number, kidsSoFar: number) => {
+    const wifeAge = couple.wifeAgeAtMarriage + duration / 12;
+    return `${couple.wife.education}|${Math.min(kidsSoFar, 3)}|${Math.floor(wifeAge / 5)}`;
+  };
+  const baselineDelta = new Map<number, [number, number]>();
+  const parentDeltas: { year: number; delta: number }[] = [];
+  let satSum = 0;
+  let satSqSum = 0;
+  let satN = 0;
   const ageX: number[] = [];
   const ageY: number[] = [];
   const within10: { couple: Couple; divorced: number }[] = [];
@@ -166,6 +236,18 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
 
   const ageBand = (age: number) => (age < 22 ? 0 : age < 26 ? 1 : age < 30 ? 2 : 3);
   const onMonth = (r: MonthRecord, couple: Couple) => {
+    satSeries[satLen++] = r.satisfaction;
+    satSum += r.satisfaction;
+    satSqSum += r.satisfaction * r.satisfaction;
+    satN += 1;
+    if (r.monthsSinceShock === 0 && (r.lastShock === 'layoff' || r.lastShock === 'plantClosing')) {
+      const wifeAge = couple.wifeAgeAtMarriage + r.duration / 12;
+      if (wifeAge < 40) {
+        displacedBefore40 = true;
+        // 이번 달 출생은 사건 이전으로 친다(사건 이후 출산만 셈).
+        displacementEvents.push({ stratum: stratumAt(couple, r.duration, r.childrenCount), atDuration: r.duration });
+      }
+    }
     const year = `${Math.min(Math.floor(r.duration / 12), 30)}|${couple.husband.education}|${ageBand(couple.husbandAgeAtMarriage)}`;
     const d = r.divorcedThisMonth;
     totalMonths += 1;
@@ -178,6 +260,15 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
     if (r.husbandEmployment === 'unemployed') rates.notFullTime.add('exposed', year, d);
     else if (r.husbandEmployment === 'employed') rates.notFullTime.add('baseline', year, d);
     rates.homemaker.add(couple.wifeIsHomemaker ? 'exposed' : 'baseline', year, d);
+
+    if (r.childrenCount === 0) {
+      rates.youngChild.add('baseline', year, d);
+      rates.olderChild.add('baseline', year, d);
+    } else if (r.youngestChildAgeMonths !== undefined && r.youngestChildAgeMonths < 36) {
+      rates.youngChild.add('exposed', year, d);
+    } else if (r.youngestChildAgeMonths !== undefined && r.youngestChildAgeMonths >= 72) {
+      rates.olderChild.add('exposed', year, d);
+    }
 
     const inWindow = r.lastShock !== undefined && r.monthsSinceShock !== undefined && r.monthsSinceShock < SHOCK_WINDOW_MONTHS;
     for (const kind of ['layoff', 'plantClosing', 'disability'] as const) {
@@ -194,8 +285,59 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
 
   for (let i = 0; i < options.n; i++) {
     const couple = sampleCouple(createRng(options.seed * 1_000_003 + i * 2));
+    satLen = 0;
+    displacedBefore40 = false;
+    displacementEvents = [];
     const outcome = simulateCouple(couple, params, createRng(options.seed * 1_000_003 + i * 2 + 1), simOptions, onMonth);
     const divorced = outcome.endReason === 'divorce';
+
+    // ---- 출산 집계 ----
+    const kids = outcome.birthDurations.length;
+    if (outcome.wifeReached45) {
+      parityCounts[Math.min(kids, 4)] += 1;
+      parityTotal += 1;
+      paritySum += kids;
+      const e = kidsByEdu[couple.wife.education];
+      e[0] += 1;
+      e[1] += kids;
+      if (kids === 0) e[2] += 1;
+    }
+    // 실직 후 출산(사건 기준). 노출: 실직 시점 이후 출산. 대조: 한 번도 실직 안 한 부부의 매 결혼 기념일
+    // (아내 40세 전) 기준점 이후 출산. 둘 다 결혼 안에서만(이혼하면 거기서 멈춤 — 효과의 일부).
+    const birthsAfter = (d: number) => outcome.birthDurations.filter((b) => b > d).length;
+    const kidsAt = (d: number) => outcome.birthDurations.filter((b) => b <= d).length;
+    if (outcome.wifeReached45) {
+      if (displacedBefore40) {
+        for (const ev of displacementEvents) {
+          const cell = displacement.get(ev.stratum) ?? [0, 0, 0, 0];
+          cell[0] += 1;
+          cell[1] += birthsAfter(ev.atDuration);
+          displacement.set(ev.stratum, cell);
+        }
+      } else {
+        for (let d = 12; d < outcome.durationMonths && couple.wifeAgeAtMarriage + d / 12 < 40; d += 12) {
+          const stratum = stratumAt(couple, d, kidsAt(d));
+          const cell = displacement.get(stratum) ?? [0, 0, 0, 0];
+          cell[2] += 1;
+          cell[3] += birthsAfter(d);
+          displacement.set(stratum, cell);
+        }
+      }
+    }
+    // 출산 후 만족도: 첫 출산 전후 [b−3, b+12]
+    const first = outcome.birthDurations[0];
+    if (first !== undefined && first >= 3 && first + 12 < satLen) {
+      parentDeltas.push({ year: Math.floor(first / 12), delta: satSeries[first + 12] - satSeries[first - 3] });
+    }
+    // 무자녀 기준: 1년 간격으로 창을 잡되 그 창 끝까지 출산이 없어야 한다.
+    const noBirthUntil = first ?? Number.POSITIVE_INFINITY;
+    for (let w = 0; w + 15 < satLen && w + 15 < noBirthUntil; w += 12) {
+      const year = Math.floor((w + 3) / 12);
+      const cell = baselineDelta.get(year) ?? [0, 0];
+      cell[0] += 1;
+      cell[1] += satSeries[w + 15] - satSeries[w];
+      baselineDelta.set(year, cell);
+    }
 
     // 카플란–마이어용: 지속 개월 d까지 위험 집합에 있었다.
     const last = Math.min(outcome.durationMonths, MAX_DURATION_MONTHS);
@@ -248,13 +390,41 @@ export function measure(params: MarriageParams, options: MeasureOptions): Measur
   for (const education of EDUCATIONS) {
     const [n, d] = by55[education];
     values[`by55_${education}`] = n > 0 ? d / n : NaN;
+    const [kn, ksum, kzero] = kidsByEdu[education];
+    values[`kids_${education}`] = kn > 0 ? ksum / kn : NaN;
+    if (education === 'lessThanHighSchool' || education === 'bachelorsOrMore') values[`childless_${education}`] = kn > 0 ? kzero / kn : NaN;
   }
+  ['parity_0', 'parity_1', 'parity_2', 'parity_3', 'parity_4plus'].forEach((key, k) => (values[key] = parityCounts[k] / parityTotal));
+  values.parity_mean = paritySum / parityTotal;
+
+  const satMean = satSum / satN;
+  const satSd = Math.sqrt(Math.max(1e-9, satSqSum / satN - satMean * satMean));
+  let dipSum = 0;
+  let dipN = 0;
+  for (const { year, delta } of parentDeltas) {
+    const base = baselineDelta.get(year);
+    if (!base || base[0] < 20) continue;
+    dipSum += delta - base[1] / base[0];
+    dipN += 1;
+  }
+  values.postBirthSatisfaction = dipN > 0 ? dipSum / dipN / satSd : NaN;
+
+  let dispWeight = 0;
+  let dispDiff = 0;
+  for (const [en, esum, un, usum] of displacement.values()) {
+    if (en === 0 || un === 0) continue;
+    dispDiff += en * (esum / en - usum / un);
+    dispWeight += en;
+  }
+  values.displacementFertility = dispWeight > 0 ? dispDiff / dispWeight : NaN;
 
   return {
     values,
     extras: {
       shareMonthsHusbandNotFullTime: notFullTimeMonths / totalMonths,
       shareMonthsWithFinancialConflict: financialConflictMonths / totalMonths,
+      rr_youngChild: rates.youngChild.ratio(),
+      rr_olderChild: rates.olderChild.ratio(),
     },
   };
 }

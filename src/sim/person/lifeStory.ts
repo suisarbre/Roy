@@ -1,36 +1,38 @@
 import type { GameDate } from '../../game/types';
 import { createCareerStepper, type CareerStepResult } from '../career/model';
 import type { HouseholdContext } from '../career/types';
-import { sampleAgeAtDeath } from '../data';
 import { totalMonthsToDate } from '../gameDate';
 import { CALIBRATED_PARAMS, CALIBRATED_WOMEN_PARAMS } from '../marriage/calibratedParams';
-import { simulateCouple } from '../marriage/model';
-import { FIXED_ASSUMPTIONS, INITIAL_PARAMS, INITIAL_WOMEN_PARAMS } from '../marriage/params';
-import { buildHusbandTrack } from '../marriage/population';
-import type { Couple } from '../marriage/types';
-import { createRng, type Rng } from '../rng';
-import { gaussian, mixSeed } from '../stats';
-import { DEFAULT_CAREER_PARAMS, sampleProfile, toSpouse, toWorker, type PersonProfile } from './profile';
+import { INITIAL_PARAMS, INITIAL_WOMEN_PARAMS } from '../marriage/params';
+import { createRng } from '../rng';
+import { CALIBRATED_WORLD_MARRIAGE, CALIBRATED_WORLD_PARAMS } from '../world/calibratedParams';
+import { World } from '../world/engine';
+import { INITIAL_WORLD_PARAMS } from '../world/params';
+import { DEFAULT_CAREER_PARAMS, toWorker, type PersonProfile } from './profile';
 
 /**
- * NPC 한 사람의 인생 이야기 — 경력 모델과 결혼 모델을 같이 돌려 만든다. 프로필의 lifeSeed로 완전히
- * 정해지므로 저장하지 않고 필요할 때 계산해 캐시한다(몇 ms).
+ * NPC 한 사람의 인생 이야기 — 공유 세계 엔진(src/sim/world)에 이 사람을 주인공으로 넣고 85세까지 굴려 만든다.
+ * 만남·연애·동거·결혼·이혼·재혼·혼외 출산·외도가 전부 세계의 규칙대로 나오고, 상대들은 만날 때 실체화된
+ * 사람들이다. 프로필의 lifeSeed로 완전히 정해지므로 저장하지 않고 캐시한다(수 ms).
  *
- * - 결혼: 85%가 첫 결혼을 한다(NLSY79). 배우자는 이 사람의 나이·학력에 맞춰 뽑은 프로필(동류혼 0.6).
- *   부부를 결혼 행위자 모델로 굴려 출산·이혼이 나온다. 여성이면 그 부부 안에서 굴린 아내의 경력이 이
- *   사람의 경력이다(출산 후 이탈·복귀가 들어간다).
- * - 사망: 이 사람의 사망은 npc/lifecycle.ts가 굴린다. 배우자의 사망만 여기서 생명표로 뽑아 사별로 끝낸다.
- * - Roy의 배우자: 그 결혼은 플레이어의 것이라 여기서 만들지 않는다. 경력만 — 여성이면 "결혼 중, 자녀
- *   정보 없음, 배우자 소득 평균"이라는 가구 상황으로(자녀는 게임 상태에서 아직 안 온다).
+ * - 사망: 이 사람의 사망은 npc/lifecycle.ts가 굴린다 — 이야기 안의 사망은 쓰지 않고(세계는 주인공을 죽일 수
+ *   있지만 그 뒤 사건이 없을 뿐), 게임이 정한 사망이 우선한다.
+ * - Roy의 배우자: 그 결혼은 플레이어의 것이라 세계에 넣지 않는다. 경력만 — 여성이면 "결혼 중, 자녀 정보 없음,
+ *   배우자 소득 평균"이라는 가구 상황으로.
+ * - Roy의 부모: 반드시 짝을 찾도록 "짝 찾는 힘"을 크게 올린다(Roy가 있으니까).
  *
- * 한계: 재혼이 없다(결혼 모델이 첫 결혼만 다룬다). 부모 NPC의 출산은 Roy와 연결돼 있지 않다.
+ * 한계: NPC마다 따로 세계를 돌린다 — 두 NPC가 서로 만나 결혼하는 공유는 아직 게임 쪽 세계 객체가 필요하다.
  */
 
-export type FamilyEventKind = 'married' | 'divorced' | 'widowed' | 'childBorn';
+export type FamilyEventKind = 'married' | 'cohabited' | 'divorced' | 'separated' | 'widowed' | 'childBorn' | 'affairCameOut' | 'spouseAffairCameOut';
 
 export interface FamilyEvent {
   date: GameDate;
   kind: FamilyEventKind;
+  /** 결혼이면 몇 번째인지(1 = 첫 결혼). */
+  nth?: number;
+  /** 출생이면 결혼 밖이었나. */
+  nonmarital?: boolean;
 }
 
 export interface LifeStory {
@@ -44,19 +46,18 @@ export interface LifeStory {
 export interface LifeStoryOptions {
   /** Roy의 배우자(그 결혼은 플레이어가 산다). */
   marriedToRoy?: boolean;
-  /** 반드시 결혼한 사람(Roy의 부모 — 비혼 15%를 건너뛴다). */
+  /** 반드시 짝을 찾는 사람(Roy의 부모). */
   forceMarried?: boolean;
 }
 
 const UNTIL_AGE = 85;
-const MARRIAGE_PARAMS = { ...INITIAL_PARAMS, ...CALIBRATED_PARAMS };
-const WOMEN_PARAMS = { ...INITIAL_WOMEN_PARAMS, ...CALIBRATED_WOMEN_PARAMS };
+const WORLD_CONFIG = {
+  world: { ...INITIAL_WORLD_PARAMS, ...CALIBRATED_WORLD_PARAMS },
+  marriage: { ...INITIAL_PARAMS, ...CALIBRATED_PARAMS, ...CALIBRATED_WORLD_MARRIAGE },
+  women: { ...INITIAL_WOMEN_PARAMS, ...CALIBRATED_WOMEN_PARAMS },
+};
 const cache = new Map<string, LifeStory>();
 const CACHE_LIMIT = 1000;
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, x));
-}
 
 function soloCareer(profile: PersonProfile, ctx: HouseholdContext): CareerStepResult[] {
   const female = profile.sex === 'female';
@@ -64,24 +65,11 @@ function soloCareer(profile: PersonProfile, ctx: HouseholdContext): CareerStepRe
     { ...toWorker(profile), sex: profile.sex, traditionalism: profile.traits.traditionalism },
     DEFAULT_CAREER_PARAMS,
     createRng(profile.lifeSeed),
-    { untilAge: UNTIL_AGE, women: female ? WOMEN_PARAMS : undefined },
+    { untilAge: UNTIL_AGE, women: female ? WORLD_CONFIG.women : undefined },
   );
   const months: CareerStepResult[] = [];
   for (let r = stepper.step(ctx); r; r = stepper.step(ctx)) months.push(r);
   return months;
-}
-
-function samplePartner(rng: Rng, profile: PersonProfile, partnerBirthYear: number): PersonProfile {
-  const sex = profile.sex === 'male' ? 'female' : 'male';
-  const wantSame = rng() < FIXED_ASSUMPTIONS.educationHomogamy;
-  let chosen: PersonProfile | undefined;
-  for (let k = 0; k < 8; k++) {
-    const candidate = sampleProfile(Math.floor(rng() * 4294967296), { sex, birthYear: partnerBirthYear, losAngeles: profile.losAngeles });
-    chosen ??= candidate;
-    if (!wantSame) break;
-    if (candidate.education === profile.education) return candidate;
-  }
-  return chosen!;
 }
 
 export function buildLifeStory(profile: PersonProfile, options: LifeStoryOptions = {}): LifeStory {
@@ -99,61 +87,40 @@ function computeStory(profile: PersonProfile, options: LifeStoryOptions): LifeSt
   if (options.marriedToRoy) {
     return { profile, months: soloCareer(profile, { married: true, birthThisMonth: false, spouseAnnualEarnings: 1 }), familyEvents: [] };
   }
-  const rng = createRng(mixSeed(profile.lifeSeed, 0xfa111e));
-  // 비혼 15% — NLSY79의 "55세까지 결혼 경험 85%"(여성 기준 값을 남녀 모두에 쓴다).
-  if (rng() < FIXED_ASSUMPTIONS.neverMarriedWomenShare && !options.forceMarried) {
-    return { profile, months: soloCareer(profile, { married: false, birthThisMonth: false, spouseAnnualEarnings: 0 }), familyEvents: [] };
+  const start = profile.birthYear * 12 + profile.birthMonth + 16 * 12;
+  const world = new World(WORLD_CONFIG, start);
+  world.recordMonths = true;
+  const me = world.addPerson(profile, true, options.forceMarried ? 3 : 0);
+  world.runUntil(profile.birthYear * 12 + profile.birthMonth + UNTIL_AGE * 12);
+
+  const raw: { t: number; e: Omit<FamilyEvent, 'date'> }[] = [];
+  let nth = 0;
+  let partner: PersonProfile | undefined;
+  const unions = me.unionIds.map((id) => world.unions.get(id)!).sort((a, b) => a.startedAt - b.startedAt);
+  for (const u of unions) {
+    const other = world.persons.get(u.manId === me.id ? u.womanId : u.manId)!;
+    const iCheat = u.cheaterId === me.id;
+    if (u.cohabitedAt !== undefined && u.cohabitedAt !== u.marriedAt && !u.secret) raw.push({ t: u.cohabitedAt, e: { kind: 'cohabited' } });
+    if (u.marriedAt !== undefined) {
+      nth += 1;
+      partner ??= other.profile;
+      raw.push({ t: u.marriedAt, e: { kind: 'married', nth } });
+    }
+    // 내 외도가 들킨 것만 여기서(외도 상대 입장의 발각은 사건으로 치지 않는다). 배우자의 외도는 아래.
+    if (u.discoveredAt !== undefined && iCheat) raw.push({ t: u.discoveredAt, e: { kind: 'affairCameOut' } });
+    if (u.endedAt !== undefined && u.cheaterId === undefined) {
+      if (u.endReason === 'divorce') raw.push({ t: u.endedAt, e: { kind: 'divorced' } });
+      else if (u.endReason === 'widowed' && other.diedAt !== undefined && other.diedAt <= u.endedAt) raw.push({ t: u.endedAt, e: { kind: 'widowed' } });
+      else if (u.endReason === 'breakup' && u.cohabitedAt !== undefined) raw.push({ t: u.endedAt, e: { kind: 'separated' } });
+    }
   }
-
-  // 결혼 나이: 남편 학력별 평균(NLSY79) — 아내는 대략 두 살 아래.
-  const male = profile.sex === 'male';
-  const sd = FIXED_ASSUMPTIONS.ageAtMarriageSd;
-  const ownAge = clamp(FIXED_ASSUMPTIONS.meanAgeAtMarriageByEducation[profile.education] - (male ? 0 : 2) + gaussian(rng) * sd, 17, 45);
-  const partnerAge = clamp(ownAge + (male ? -2 : 2) + gaussian(rng) * 2, 17, 50);
-  const marriedAtMonth = profile.birthYear * 12 + profile.birthMonth + Math.round(ownAge * 12);
-  const partner = samplePartner(rng, profile, Math.floor(marriedAtMonth / 12 - partnerAge));
-  const husbandProfile = male ? profile : partner;
-  const wifeProfile = male ? partner : profile;
-  const couple: Couple = {
-    husband: toSpouse(husbandProfile),
-    wife: toSpouse(wifeProfile),
-    husbandProfile,
-    wifeProfile,
-    marriedAtMonth,
-    husbandAgeAtMarriage: (marriedAtMonth - husbandProfile.birthYear * 12) / 12,
-    wifeAgeAtMarriage: (marriedAtMonth - wifeProfile.birthYear * 12) / 12,
-    desiredChildren: gaussian(rng),
-  };
-
-  const husbandMonths: CareerStepResult[] = [];
-  const track = buildHusbandTrack(husbandProfile, DEFAULT_CAREER_PARAMS, UNTIL_AGE, husbandMonths);
-  const wifeMonths: CareerStepResult[] = [];
-  const outcome = simulateCouple(
-    couple,
-    MARRIAGE_PARAMS,
-    { husbandTrack: track, women: WOMEN_PARAMS, seed: mixSeed(profile.lifeSeed, 0xc0091e) },
-    {
-      censorAtHusbandAge: UNTIL_AGE,
-      keepMonths: false,
-      ignoreMortality: true,
-      wifeUntilAge: UNTIL_AGE,
-      onWifeMonth: (r) => wifeMonths.push(r),
-    },
-  );
-
-  // 배우자의 사망은 생명표로 — 결혼 모델 안에서는 사망을 껐다.
-  const partnerDeathAge = sampleAgeAtDeath(partner.birthYear, partner.sex, Math.max(0, (marriedAtMonth - partner.birthYear * 12) / 12), rng);
-  const partnerDeathDuration = partner.birthYear * 12 + Math.round(partnerDeathAge * 12) + Math.floor(rng() * 12) - marriedAtMonth;
-  const divorceAt = outcome.endReason === 'divorce' ? outcome.durationMonths : Number.POSITIVE_INFINITY;
-  const endDuration = Math.min(divorceAt, partnerDeathDuration);
-  const endKind: FamilyEventKind = partnerDeathDuration < divorceAt ? 'widowed' : 'divorced';
-
-  const familyEvents: FamilyEvent[] = [{ date: totalMonthsToDate(marriedAtMonth), kind: 'married' }];
-  for (const d of outcome.birthDurations) {
-    if (d >= endDuration) continue;
-    familyEvents.push({ date: totalMonthsToDate(marriedAtMonth + d), kind: 'childBorn' });
+  // 이 사람의 외도 상대에게 들킨 외도(상대 쪽에서 본 사건)는 위에서, 배우자의 외도는 배우자의 비밀 선에서.
+  for (const u of world.unions.values()) {
+    if (u.discoveredAt === undefined || u.mainUnionId === undefined) continue;
+    const main = world.unions.get(u.mainUnionId);
+    if (main && (main.manId === me.id || main.womanId === me.id) && u.cheaterId !== me.id) raw.push({ t: u.discoveredAt, e: { kind: 'spouseAffairCameOut' } });
   }
-  if (Number.isFinite(endDuration)) familyEvents.push({ date: totalMonthsToDate(marriedAtMonth + endDuration), kind: endKind });
-
-  return { profile, months: male ? husbandMonths : wifeMonths, partner, familyEvents };
+  for (const c of me.children) raw.push({ t: c.bornAt, e: { kind: 'childBorn', nonmarital: !c.marital } });
+  raw.sort((a, b) => a.t - b.t);
+  return { profile, months: me.months ?? [], partner, familyEvents: raw.map((r) => ({ date: totalMonthsToDate(r.t), ...r.e })) };
 }

@@ -116,6 +116,201 @@ function stepWife(
   return result;
 }
 
+/** 한 부부(결합)의 상태 — 결혼 모델의 월 루프가 들고 다니는 것 전부. 세계(src/sim/world)도 같은 상태를 쓴다. */
+export interface UnionState {
+  satisfaction: number;
+  scar: number;
+  employment: EmploymentState;
+  lastShock?: JobShockKind;
+  monthsSinceShock?: number;
+  wifeBlame: number;
+  birthDurations: number[];
+  lastCommitment: number;
+  /** 결합 후 경과 개월(다음 step이 처리할 달). */
+  duration: number;
+  desired: number;
+  baseStrain: number;
+  /** 이 결합 전에 이미 있던 자녀(재혼·동거) — 희망 자녀 수를 채웠는지 셀 때 더한다. */
+  priorChildren: number;
+}
+
+export function createUnionState(couple: Couple, p: MarriageParams, rng: Rng): UnionState {
+  return {
+    satisfaction: S.SET_POINT + p.honeymoonBoost + gaussian(rng) * S.SATISFACTION_INITIAL_SD,
+    scar: 0,
+    employment: 'employed',
+    wifeBlame: 0,
+    birthDurations: [],
+    lastCommitment: 1, // 첫 달의 출산 판단용(신혼은 안정적이라고 본다)
+    duration: 0,
+    desired: desiredChildrenFor(couple, p),
+    baseStrain: chronicStrain(couple.husband.education, p),
+    priorChildren: 0,
+  };
+}
+
+export interface UnionMonthInputs {
+  husbandAge: number;
+  wifeAge: number;
+  /** 남편의 이번 달 고용과 충격(경력 궤적에서). */
+  employment: EmploymentState;
+  shock?: JobShockKind;
+  /** 아내의 지난달 경력 결과. */
+  wifeLast?: CareerStepResult;
+  forceWifeAtHome?: boolean;
+  disableFinancialConflict?: boolean;
+  /** 계획 외 출산의 상대 확률(기본 S.UNPLANNED_BIRTH_RATIO) — 연애·동거 단계는 세계 파라미터로 바꾼다. */
+  unplannedRatio?: number;
+  /** 원하는 자녀가 있어도 계획 출산을 하지 않는 단계(연애·외도). */
+  noPlannedBirths?: boolean;
+  /** 대안의 추가분(외도 상대가 실제로 있을 때) — 남편·아내 각각. */
+  extraAlternatives?: { husband: number; wife: number };
+  /** 출산 결정 직후, 행동 전에 불린다 — 아내의 경력을 한 칸 진행하고 그 결과를 돌려준다(없으면 그대로). */
+  onBirthsDecided?: (birthThisMonth: boolean, youngestAgeMonths: number | undefined) => CareerStepResult | undefined;
+}
+
+export interface UnionMonthResult {
+  record: MonthRecord;
+  wifeLast?: CareerStepResult;
+}
+
+/**
+ * 결합 한 달. 평가 → 출산 → (아내 경력 한 칸) → 행동 → 만족도 → 헌신 → 떠남. 사망과 관측 종료는 부르는
+ * 쪽이 먼저 확인한다. 끝나면 state.duration이 1 늘어난다.
+ */
+export function stepUnionMonth(state: UnionState, couple: Couple, p: MarriageParams, inputs: UnionMonthInputs, rng: Rng): UnionMonthResult {
+  const { husband, wife } = couple;
+  const duration = state.duration;
+  const { husbandAge, wifeAge } = inputs;
+  state.employment = inputs.employment;
+  const employment = state.employment;
+  const shock = inputs.shock;
+
+  if (shock) {
+    state.lastShock = shock;
+    state.monthsSinceShock = 0;
+    const blameScale = Math.max(0, 1 + S.BLAME_TRADITIONALISM * wife.traits.traditionalism);
+    state.wifeBlame = shock === 'layoff' ? p.layoffBlame * blameScale : shock === 'plantClosing' ? p.layoffBlame * S.BLAME_PLANT_RATIO * blameScale : 0;
+  } else if (state.monthsSinceShock !== undefined) {
+    state.monthsSinceShock += 1;
+    if (employment === 'employed') state.wifeBlame *= 1 - S.BLAME_DECAY;
+  }
+
+  // 아내의 지난달 상태(이번 달 평가에 쓰는 사실).
+  let wifeLast = inputs.wifeLast;
+  const wifeAtHome = inputs.forceWifeAtHome ?? (wifeLast?.atHome ?? false);
+  const wifeEmployed = inputs.forceWifeAtHome !== undefined ? !inputs.forceWifeAtHome : wifeLast?.state === 'employed' || wifeLast?.state === 'selfEmployed';
+  const householdStrain = state.baseStrain + (wifeAtHome ? S.SINGLE_INCOME_STRAIN : 0);
+
+  // ---- 3. 평가 ----
+  const notFullTime = employment !== 'employed';
+  const threatScale = employment === 'disabled' ? S.DISABILITY_THREAT_RATIO : 1;
+  const wifeThreat = notFullTime
+    ? threatScale * p.jobLossThreat * Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * wife.traits.financialAnxiety) * (wifeAtHome ? S.THREAT_HOMEMAKER_MULTIPLIER : 1)
+    : 0;
+  const husbandThreat = notFullTime
+    ? threatScale * p.jobLossThreat *
+      Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * husband.traits.financialAnxiety + S.HUSBAND_SHAME_TRADITIONALISM * husband.traits.traditionalism)
+    : 0;
+
+  const blocked = inputs.disableFinancialConflict === true;
+  const financialWifeStress = blocked ? 0 : householdStrain + wifeThreat + state.wifeBlame;
+  const financialHusbandStress = blocked ? 0 : householdStrain + husbandThreat;
+
+  // ---- 출산 ----
+  const births = state.birthDurations;
+  const children = births.length;
+  const lastBirth = children > 0 ? births[children - 1] : undefined;
+  const spacingOk = lastBirth === undefined || duration - lastBirth >= S.MIN_BIRTH_SPACING_MONTHS;
+  let birthThisMonth = false;
+  if (spacingOk) {
+    const wanting = !inputs.noPlannedBirths && children + state.priorChildren < state.desired;
+    const careerStake = wifeEmployed && wifeLast?.logWage !== undefined ? Math.max(0, wifeLast.logWage + 0.5) : 0;
+    const readiness = sigmoid(
+      p.birthPace + p.birthCommitment * state.lastCommitment - p.birthStressAversion * Math.max(0, financialWifeStress) - p.birthCareerCost * careerStake,
+    );
+    const chance = monthlyFecundity(wifeAge) * (wanting ? readiness : inputs.unplannedRatio ?? S.UNPLANNED_BIRTH_RATIO);
+    if (rng() < chance) {
+      births.push(duration);
+      birthThisMonth = true;
+    }
+  }
+  const childrenNow = births.length;
+  const youngestAge = childrenNow > 0 ? duration - births[childrenNow - 1] : undefined;
+  let youngChildren = 0;
+  let childBond = 0;
+  for (const b of births) {
+    const age = duration - b;
+    if (age < S.YOUNG_CHILD_MONTHS) youngChildren += 1;
+    childBond +=
+      age < S.INFANT_MONTHS
+        ? S.INFANT_BOND_MULTIPLIER
+        : age < S.CHILD_BOND_FULL_UNTIL_MONTHS
+        ? 1
+        : Math.max(S.CHILD_BOND_FLOOR, 1 - ((1 - S.CHILD_BOND_FLOOR) * (age - S.CHILD_BOND_FULL_UNTIL_MONTHS)) / (216 - S.CHILD_BOND_FULL_UNTIL_MONTHS));
+  }
+  const parentingStrain = p.youngChildStrain * youngChildren;
+
+  // 아내의 경력 한 칸(출산·남편 소득을 보고 떠나거나 돌아온다).
+  if (inputs.onBirthsDecided) wifeLast = inputs.onBirthsDecided(birthThisMonth, youngestAge) ?? wifeLast;
+
+  const wifeStress = financialWifeStress + parentingStrain;
+  const husbandStress = financialHusbandStress + parentingStrain;
+
+  // ---- 4. 행동 ----
+  const wifeSympathy = employment === 'disabled' ? p.supportSympathy : 0;
+  // 장애는 본인에게도 "내 탓이 아닌" 사건이라 아내의 연민이 남편의 방어적 대립도 누그러뜨린다고 본다(절반).
+  const husbandBehavior = chooseBehavior(husband, husbandStress, wifeSympathy / 2, p, rng);
+  const wifeBehavior = chooseBehavior(wife, wifeStress, wifeSympathy, p, rng);
+  const confronts = (husbandBehavior === 'confront' ? 1 : 0) + (wifeBehavior === 'confront' ? 1 : 0);
+  const supports = (husbandBehavior === 'support' ? 1 : 0) + (wifeBehavior === 'support' ? 1 : 0);
+
+  // ---- 5. 만족도 ----
+  const setPoint = S.SET_POINT - state.scar;
+  state.satisfaction +=
+    S.SATISFACTION_REVERSION * (setPoint - state.satisfaction) +
+    S.SUPPORT_GAIN * supports -
+    S.CONFRONT_LOSS * confronts -
+    (confronts === 2 ? S.MUTUAL_CONFRONT_LOSS : 0) -
+    (birthThisMonth ? p.postBirthDip : 0) +
+    gaussian(rng) * S.SATISFACTION_NOISE;
+  state.scar = state.scar * (1 - S.SCAR_HEAL_RATE) + S.SCAR_PER_CONFRONT * confronts;
+
+  // ---- 6. 헌신 ----
+  const investment = p.investmentPerLogYear * Math.log1p(duration / 12) + p.childInvestment * childBond;
+  const extra = inputs.extraAlternatives;
+  const husbandCommitment = state.satisfaction + investment - alternatives(husband, husbandAge, p) - (extra?.husband ?? 0) + barrier(husband, false, p);
+  const wifeCommitment = state.satisfaction + investment - alternatives(wife, wifeAge, p) - (extra?.wife ?? 0) + barrier(wife, wifeAtHome, p);
+
+  // ---- 7. 떠남 ----
+  state.lastCommitment = (husbandCommitment + wifeCommitment) / 2;
+  let leaver: 'husband' | 'wife' | undefined;
+  if (rng() < sigmoid(p.leaveIntercept - S.LEAVE_SLOPE * husbandCommitment)) leaver = 'husband';
+  else if (rng() < sigmoid(p.leaveIntercept - S.LEAVE_SLOPE * wifeCommitment)) leaver = 'wife';
+
+  const record: MonthRecord = {
+    duration,
+    husbandEmployment: employment,
+    wifeAtHome,
+    wifeEmployed,
+    lastShock: state.lastShock,
+    monthsSinceShock: state.monthsSinceShock,
+    husbandBehavior,
+    wifeBehavior,
+    financialConflict: confronts > 0 && (notFullTime || state.wifeBlame > 0.1),
+    satisfaction: state.satisfaction,
+    husbandCommitment,
+    wifeCommitment,
+    divorcedThisMonth: leaver !== undefined,
+    leaver,
+    childrenCount: childrenNow,
+    youngestChildAgeMonths: youngestAge,
+    birthThisMonth,
+  };
+  state.duration += 1;
+  return { record, wifeLast };
+}
+
 export function simulateCouple(
   couple: Couple,
   p: MarriageParams,
@@ -147,26 +342,16 @@ export function simulateCouple(
     wifeLast = r;
   }
 
-  let satisfaction = S.SET_POINT + p.honeymoonBoost + gaussian(rng) * S.SATISFACTION_INITIAL_SD;
-  let scar = 0;
+  const state = createUnionState(couple, p, rng);
   let employment: EmploymentState = 'employed';
-  let lastShock: JobShockKind | undefined;
-  let monthsSinceShock: number | undefined;
-  let wifeBlame = 0;
   let husbandEarnings12 = 0;
   const earningsWindow: number[] = [];
-
-  const baseStrain = chronicStrain(husband.education, p);
-  const desired = desiredChildrenFor(couple, p);
-  const birthDurations: number[] = [];
-  let lastCommitment = 1; // 첫 달의 출산 판단용(신혼은 안정적이라고 본다)
   let wifeDied = false;
   let wifeAgeAtEnd = couple.wifeAgeAtMarriage;
-
   let endReason: MarriageEndReason = 'censored';
-  let duration = 0;
 
-  for (; ; duration++) {
+  for (; ;) {
+    const duration = state.duration;
     rng = createRng(mixSeed(inputs.seed, duration + 1));
     const month = couple.marriedAtMonth + duration;
     const husbandAge = (month - husband.birthYear * 12) / 12;
@@ -203,138 +388,38 @@ export function simulateCouple(
       employment = 'employed';
     }
 
-    if (shock) {
-      lastShock = shock;
-      monthsSinceShock = 0;
-      const blameScale = Math.max(0, 1 + S.BLAME_TRADITIONALISM * wife.traits.traditionalism);
-      wifeBlame = shock === 'layoff' ? p.layoffBlame * blameScale : shock === 'plantClosing' ? p.layoffBlame * S.BLAME_PLANT_RATIO * blameScale : 0;
-    } else if (monthsSinceShock !== undefined) {
-      monthsSinceShock += 1;
-      if (employment === 'employed') wifeBlame *= 1 - S.BLAME_DECAY;
-    }
-
-    // 아내의 지난달 상태(이번 달 평가에 쓰는 사실).
-    const wifeAtHome = options.forceWifeAtHome ?? (wifeLast?.atHome ?? false);
-    const wifeEmployed = options.forceWifeAtHome !== undefined ? !options.forceWifeAtHome : wifeLast?.state === 'employed' || wifeLast?.state === 'selfEmployed';
-    const householdStrain = baseStrain + (wifeAtHome ? S.SINGLE_INCOME_STRAIN : 0);
-
-    // ---- 3. 평가 ----
-    const notFullTime = employment !== 'employed';
-    const threatScale = employment === 'disabled' ? S.DISABILITY_THREAT_RATIO : 1;
-    const wifeThreat = notFullTime
-      ? threatScale * p.jobLossThreat * Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * wife.traits.financialAnxiety) * (wifeAtHome ? S.THREAT_HOMEMAKER_MULTIPLIER : 1)
-      : 0;
-    const husbandThreat = notFullTime
-      ? threatScale * p.jobLossThreat *
-        Math.max(0, 1 + S.THREAT_FINANCIAL_ANXIETY * husband.traits.financialAnxiety + S.HUSBAND_SHAME_TRADITIONALISM * husband.traits.traditionalism)
-      : 0;
-
-    const blocked = options.disableFinancialConflict === true;
-    const financialWifeStress = blocked ? 0 : householdStrain + wifeThreat + wifeBlame;
-    const financialHusbandStress = blocked ? 0 : householdStrain + husbandThreat;
-
-    // ---- 출산 ----
-    const children = birthDurations.length;
-    const lastBirth = children > 0 ? birthDurations[children - 1] : undefined;
-    const spacingOk = lastBirth === undefined || duration - lastBirth >= S.MIN_BIRTH_SPACING_MONTHS;
-    let birthThisMonth = false;
-    if (spacingOk) {
-      const wanting = children < desired;
-      const careerStake = wifeEmployed && wifeLast?.logWage !== undefined ? Math.max(0, wifeLast.logWage + 0.5) : 0;
-      const readiness = sigmoid(
-        p.birthPace + p.birthCommitment * lastCommitment - p.birthStressAversion * Math.max(0, financialWifeStress) - p.birthCareerCost * careerStake,
-      );
-      const chance = monthlyFecundity(wifeAge) * (wanting ? readiness : S.UNPLANNED_BIRTH_RATIO);
-      if (rng() < chance) {
-        birthDurations.push(duration);
-        birthThisMonth = true;
-      }
-    }
-    const childrenNow = birthDurations.length;
-    const youngestAge = childrenNow > 0 ? duration - birthDurations[childrenNow - 1] : undefined;
-    let youngChildren = 0;
-    let childBond = 0;
-    for (const b of birthDurations) {
-      const age = duration - b;
-      if (age < S.YOUNG_CHILD_MONTHS) youngChildren += 1;
-      childBond +=
-        age < S.INFANT_MONTHS
-          ? S.INFANT_BOND_MULTIPLIER
-          : age < S.CHILD_BOND_FULL_UNTIL_MONTHS
-          ? 1
-          : Math.max(S.CHILD_BOND_FLOOR, 1 - ((1 - S.CHILD_BOND_FLOOR) * (age - S.CHILD_BOND_FULL_UNTIL_MONTHS)) / (216 - S.CHILD_BOND_FULL_UNTIL_MONTHS));
-    }
-    const parentingStrain = p.youngChildStrain * youngChildren;
-
-    // 아내의 경력 한 칸(출산·남편 소득을 보고 떠나거나 돌아온다).
-    wifeLast =
-      stepWife(
-        wifeStepper,
-        { married: true, youngestChildAgeMonths: youngestAge, birthThisMonth, spouseAnnualEarnings: options.forcedShock ? 1 : husbandEarnings12 },
-        options.onWifeMonth,
-      ) ?? wifeLast;
-
-    const wifeStress = financialWifeStress + parentingStrain;
-    const husbandStress = financialHusbandStress + parentingStrain;
-
-    // ---- 4. 행동 ----
-    const wifeSympathy = employment === 'disabled' ? p.supportSympathy : 0;
-    // 장애는 본인에게도 "내 탓이 아닌" 사건이라 아내의 연민이 남편의 방어적 대립도 누그러뜨린다고 본다(절반).
-    const husbandBehavior = chooseBehavior(husband, husbandStress, wifeSympathy / 2, p, rng);
-    const wifeBehavior = chooseBehavior(wife, wifeStress, wifeSympathy, p, rng);
-    const confronts = (husbandBehavior === 'confront' ? 1 : 0) + (wifeBehavior === 'confront' ? 1 : 0);
-    const supports = (husbandBehavior === 'support' ? 1 : 0) + (wifeBehavior === 'support' ? 1 : 0);
-
-    // ---- 5. 만족도 ----
-    const setPoint = S.SET_POINT - scar;
-    satisfaction +=
-      S.SATISFACTION_REVERSION * (setPoint - satisfaction) +
-      S.SUPPORT_GAIN * supports -
-      S.CONFRONT_LOSS * confronts -
-      (confronts === 2 ? S.MUTUAL_CONFRONT_LOSS : 0) -
-      (birthThisMonth ? p.postBirthDip : 0) +
-      gaussian(rng) * S.SATISFACTION_NOISE;
-    scar = scar * (1 - S.SCAR_HEAL_RATE) + S.SCAR_PER_CONFRONT * confronts;
-
-    // ---- 6. 헌신 ----
-    const investment = p.investmentPerLogYear * Math.log1p(duration / 12) + p.childInvestment * childBond;
-    const husbandCommitment = satisfaction + investment - alternatives(husband, husbandAge, p) + barrier(husband, false, p);
-    const wifeCommitment = satisfaction + investment - alternatives(wife, wifeAge, p) + barrier(wife, wifeAtHome, p);
-
-    // ---- 7. 떠남 ----
-    lastCommitment = (husbandCommitment + wifeCommitment) / 2;
-    let leaver: 'husband' | 'wife' | undefined;
-    if (rng() < sigmoid(p.leaveIntercept - S.LEAVE_SLOPE * husbandCommitment)) leaver = 'husband';
-    else if (rng() < sigmoid(p.leaveIntercept - S.LEAVE_SLOPE * wifeCommitment)) leaver = 'wife';
-
-    const record: MonthRecord = {
-      duration,
-      husbandEmployment: employment,
-      wifeAtHome,
-      wifeEmployed,
-      lastShock,
-      monthsSinceShock,
-      husbandBehavior,
-      wifeBehavior,
-      financialConflict: confronts > 0 && (notFullTime || wifeBlame > 0.1),
-      satisfaction,
-      husbandCommitment,
-      wifeCommitment,
-      divorcedThisMonth: leaver !== undefined,
-      leaver,
-      childrenCount: childrenNow,
-      youngestChildAgeMonths: youngestAge,
-      birthThisMonth,
-    };
+    const { record, wifeLast: nextWife } = stepUnionMonth(
+      state,
+      couple,
+      p,
+      {
+        husbandAge,
+        wifeAge,
+        employment,
+        shock,
+        wifeLast,
+        forceWifeAtHome: options.forceWifeAtHome,
+        disableFinancialConflict: options.disableFinancialConflict,
+        onBirthsDecided: (birthThisMonth, youngestAge) =>
+          stepWife(
+            wifeStepper,
+            { married: true, youngestChildAgeMonths: youngestAge, birthThisMonth, spouseAnnualEarnings: options.forcedShock ? 1 : husbandEarnings12 },
+            options.onWifeMonth,
+          ),
+      },
+      rng,
+    );
+    wifeLast = nextWife;
     onMonth?.(record, couple);
     if (keepMonths) months.push(record);
 
-    if (leaver) {
+    if (record.leaver) {
       endReason = 'divorce';
-      duration += 1;
       break;
     }
   }
+  const duration = state.duration;
+  const birthDurations = state.birthDurations;
 
   // ---- 결혼이 끝난 뒤 아내의 경력(여성 노동 적률) — 자녀는 아내와 산다고 본다 ----
   let wifeCareer;

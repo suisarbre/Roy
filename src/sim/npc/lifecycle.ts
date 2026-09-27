@@ -148,7 +148,16 @@ export function catchUpNpc(npc: NpcSimRecord, currentDate: GameDate, rng: Rng): 
   return { npc: { ...npc, life, board, lastSimulatedAt: currentDate }, events, careerEvents: careerSeen, familyEvents: familySeen };
 }
 
-const FAMILY_LABEL_KO: Record<FamilyEvent['kind'], string> = { married: '결혼', childBorn: '아이가 태어남', divorced: '이혼', widowed: '배우자와 사별' };
+const FAMILY_LABEL_KO: Record<FamilyEvent['kind'], string> = {
+  married: '결혼',
+  childBorn: '아이가 태어남',
+  divorced: '이혼',
+  widowed: '배우자와 사별',
+  cohabited: '동거 시작',
+  separated: '동거하던 상대와 헤어짐',
+  affairCameOut: '외도가 들킴',
+  spouseAffairCameOut: '배우자의 외도를 알게 됨',
+};
 
 /**
  * 인생 이야기의 이번 달 가족 사건을 lifeCourse 카운터에 반영한다(게임의 체크인 문장·기존 코드가 이 카운터를
@@ -176,7 +185,7 @@ function applyStoryMonth(
       newThread = createMarriageThread(id, monthIndex);
     } else if (e.kind === 'childBorn') {
       life.childrenCount = (life.childrenCount ?? 0) + 1;
-    } else {
+    } else if (e.kind === 'divorced' || e.kind === 'widowed') {
       if (life.marriageCount === 1 && life.firstMarriageEndedInDivorce === undefined) {
         life.firstMarriageEndedInDivorce = e.kind === 'divorced';
         life.firstMarriageDurationYears = (monthIndex - (life.marriageStartedAtMonth ?? monthIndex)) / 12;

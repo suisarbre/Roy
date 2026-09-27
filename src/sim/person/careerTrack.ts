@@ -82,7 +82,7 @@ export function storyOptionsFor(relationType: string): LifeStoryOptions {
 }
 
 export interface FamilyStatus {
-  maritalStatus: 'never' | 'married' | 'divorced' | 'widowed';
+  maritalStatus: 'never' | 'married' | 'cohabiting' | 'divorced' | 'separated' | 'widowed';
   children: number;
 }
 
@@ -94,8 +94,9 @@ export function familyStatusAt(profile: PersonProfile, date: GameDate, options?:
   for (const e of buildLifeStory(profile, options).familyEvents) {
     if (dateToTotalMonths(e.date) > t) break;
     if (e.kind === 'married') maritalStatus = 'married';
+    else if (e.kind === 'cohabited') maritalStatus = 'cohabiting';
     else if (e.kind === 'childBorn') children += 1;
-    else maritalStatus = e.kind;
+    else if (e.kind === 'divorced' || e.kind === 'widowed' || e.kind === 'separated') maritalStatus = e.kind;
   }
   return { maritalStatus, children };
 }
@@ -105,14 +106,26 @@ export const FAMILY_EVENT_SALIENCE: Readonly<Record<FamilyEventKind, { salience:
   childBorn: { salience: 0.8, domain: 'familyDuty' },
   divorced: { salience: 0.85, domain: 'relationships' },
   widowed: { salience: 0.9, domain: 'relationships' },
+  cohabited: { salience: 0.6, domain: 'relationships' },
+  separated: { salience: 0.7, domain: 'relationships' },
+  affairCameOut: { salience: 0.9, domain: 'relationships' },
+  spouseAffairCameOut: { salience: 0.9, domain: 'relationships' },
 };
 
 export function describeFamilyEvent(name: string, event: FamilyEvent): string {
   switch (event.kind) {
     case 'married':
-      return `${name} got married.`;
+      return (event.nth ?? 1) > 1 ? `${name} remarried.` : `${name} got married.`;
+    case 'cohabited':
+      return `${name} moved in with their partner.`;
+    case 'separated':
+      return `${name} split up with the partner they lived with.`;
+    case 'affairCameOut':
+      return `${name}'s affair came out.`;
+    case 'spouseAffairCameOut':
+      return `${name} found out their partner was cheating.`;
     case 'childBorn':
-      return `${name} had a baby.`;
+      return event.nonmarital ? `${name} had a baby outside of marriage.` : `${name} had a baby.`;
     case 'divorced':
       return `${name} went through a divorce.`;
     case 'widowed':

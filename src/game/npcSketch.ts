@@ -34,7 +34,14 @@ export function describeNpcForScene(npc: Npc, date: GameDate): string {
   if (npc.relationType !== 'spouse' && age >= 18) {
     const family = familyStatusAt(profile, date, storyOptions);
     const kids = family.children === 0 ? '' : family.children === 1 ? ', one child' : `, ${family.children} children`;
-    const status = { never: 'never married', married: 'married', divorced: 'divorced', widowed: 'widowed' }[family.maritalStatus];
+    const status = {
+      never: 'never married',
+      married: 'married',
+      cohabiting: 'living with a partner',
+      divorced: 'divorced',
+      separated: 'recently split from a live-in partner',
+      widowed: 'widowed',
+    }[family.maritalStatus];
     parts.push(`${status}${kids}`);
   }
   return parts.length ? `${head}: ${parts.join('. ')}.` : head;

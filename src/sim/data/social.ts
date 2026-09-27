@@ -1,0 +1,185 @@
+import type { CalibrationMoment } from './marriage';
+
+/**
+ * 공유 세계(src/sim/world)의 보정 목표 — 관계망, 연애·동거·결혼·재혼, 혼외 출산, 외도.
+ * 원칙은 다른 data 파일과 같다: 원문에서 확인한 숫자만, 그림에서 읽거나 요약본으로만 본 값은 `unverified`.
+ */
+
+const NLSY79_MARRIAGE = 'BLS Monthly Labor Review (2024), Patterns of marriage and divorce from ages 15 to 55: Evidence from the NLSY79';
+const NLSY79_MARRIAGE_URL = 'https://www.bls.gov/opub/mlr/2024/article/patterns-of-marriage-and-divorce-from-ages-15-to-55-evidence-from-the-nlsy79.htm';
+
+export const SOCIAL_MOMENTS: readonly CalibrationMoment[] = [
+  // ---- 결혼 이력 ----
+  {
+    id: 'marriageHistory.by55',
+    kind: 'marginal',
+    description: '55세까지의 결혼 이력 — 결혼 경험, 이혼 경험, 결혼 횟수 분포',
+    values: {
+      everMarried_men: 0.85,
+      everMarried_women: 0.9,
+      everDivorced_men: 0.37,
+      everDivorced_women: 0.45,
+      marriages_0: 0.13,
+      marriages_1: 0.6,
+      marriages_2: 0.22,
+      marriages_3plus: 0.06,
+      meanMarriages: 1.2,
+    },
+    unit: 'proportion',
+    population: 'NLSY79(1957–64년생) 남녀',
+    cohortFit: 'exact',
+    source: NLSY79_MARRIAGE,
+    url: NLSY79_MARRIAGE_URL,
+    howToMeasure: '세계의 1957–64년생(실체화 여부 무관) 55세 시점 결혼 이력. 이혼 경험은 전체 인구 기준(미혼 포함).',
+  },
+  {
+    id: 'marriageHistory.byEducation',
+    kind: 'conditional',
+    description: '학력별 55세까지 결혼 경험과 이혼(결혼 경험자 중)',
+    values: {
+      everMarried_men_lessThanHighSchool: 0.707,
+      everMarried_men_bachelorsOrMore: 0.886,
+      everMarried_women_lessThanHighSchool: 0.826,
+      everMarried_women_bachelorsOrMore: 0.907,
+      divorcedAmongMarried_women_lessThanHighSchool: 0.563,
+      divorcedAmongMarried_women_bachelorsOrMore: 0.405,
+    },
+    unit: 'proportion',
+    population: 'NLSY79',
+    cohortFit: 'exact',
+    source: NLSY79_MARRIAGE,
+    url: NLSY79_MARRIAGE_URL,
+    howToMeasure: '남성 학력별 이혼(53.2% / 27.1%)은 기존 결혼 적률(marriage.ts)에 이미 있다.',
+  },
+  {
+    id: 'remarriage',
+    kind: 'conditional',
+    description: '이혼 후 재혼 비율, 재혼까지 평균 기간, 두 번째 결혼의 이혼',
+    values: { remarriedShare: 0.661, meanYearsToRemarriage: 4.8, secondMarriageDivorced: 0.391 },
+    unit: 'proportion',
+    population: 'NLSY79, 55세까지',
+    cohortFit: 'exact',
+    source: NLSY79_MARRIAGE,
+    url: NLSY79_MARRIAGE_URL,
+    howToMeasure: '이혼 경험자 중 55세 전에 재혼한 비율, 재혼자의 이혼→재혼 평균 연수, 두 번째 결혼 중 55세 전에 이혼한 비율.',
+  },
+  // ---- 동거 ----
+  {
+    id: 'cohabitation.beforeFirstMarriage',
+    kind: 'conditional',
+    description: '여성 첫 결혼 중 동거가 먼저 있었던 비율 — 결혼 시기별',
+    values: { married1975to79: 0.15, married1980to84: 0.2, married1985to89: 0.3, married1990to94: 0.45 },
+    unit: 'proportion',
+    population: 'NSFG 여성',
+    cohortFit: 'close',
+    source: 'Manning & Carlson (2021), Trends in Cohabitation Prior to Marriage, NCFMR Family Profile FP-21-04',
+    url: 'https://www.bgsu.edu/ncfmr/resources/data/family-profiles/manning-carlson-trends-cohabitation-marriage-fp-21-04.html',
+    howToMeasure: '결혼 시기(연도)별 첫 결혼 중, 같은 상대와 결혼 전 동거 단계를 거친 비율.',
+    unverified: '그림에서 읽은 근삿값(요약본 경유) — 원 표 대조 필요. 허용오차 넓게.',
+  },
+  // ---- 혼외 출산 ----
+  {
+    id: 'births.nonmaritalShare',
+    kind: 'conditional',
+    description: '전체 출생 중 혼외 출생 비율 — 연도별',
+    values: { y1980: 0.184, y1985: 0.22, y1990: 0.28, y1995: 0.322, y1999: 0.33 },
+    unit: 'proportion',
+    population: '미국 전체 출생(인구동태통계)',
+    cohortFit: 'close',
+    source: 'NCHS, Nonmarital Childbearing in the United States, 1940–99 (NVSR 48-16)',
+    url: 'https://www.cdc.gov/nchs/data/nvsr/nvsr48/nvs48_16.pdf',
+    howToMeasure:
+      '횡단면(그 해 모든 산모)이라 1957–64년생 코호트만으로는 나이 구성이 다르다 — 모델: 코호트 여성의 1985–1995년 출생 중 혼외 비율과 비교, 허용오차 넓게. 동거 커플의 몫: 1980–84년 29%, 1990–94년 39%.',
+  },
+  {
+    id: 'births.nonmaritalByEducation.1992',
+    kind: 'conditional',
+    description: '1992년 출생 중 혼외 비율 — 산모 교육 연수별',
+    values: { years0to8: 0.44, years9to11: 0.592, years12: 0.324, years13to15: 0.194, years16plus: 0.054 },
+    unit: 'proportion',
+    population: '1992년 미국 출생',
+    cohortFit: 'close',
+    source: 'NCHS, Births to Unmarried Mothers: United States, 1980–92, Series 21 No. 53, Table F',
+    url: 'https://ftp.cdc.gov/pub/health_statistics/nchs/publications/DVD/DVD_2/Series_Reports/sr_21/sr21_053.pdf',
+    howToMeasure: '학력 기울기가 가파르다: 대졸 5% 대 고졸 32% 대 고졸 미만 절반 이상. 모델: 코호트 여성의 1985–95년 출생을 산모 학력별로.',
+  },
+  {
+    id: 'births.nonmaritalCohabitingShare',
+    kind: 'conditional',
+    description: '혼외 출생 중 동거 커플의 몫',
+    values: { y1980to84: 0.29, y1990to94: 0.39 },
+    unit: 'proportion',
+    population: '미국 혼외 출생',
+    cohortFit: 'close',
+    source: 'NCHS NVSR 48-16 (Bumpass & Lu 인용)',
+    url: 'https://www.cdc.gov/nchs/data/nvsr/nvsr48/nvs48_16.pdf',
+    howToMeasure: '혼외 출생 중 그 달 부모가 동거 중인 비율.',
+  },
+  // ---- 외도 ----
+  {
+    id: 'infidelity.ever',
+    kind: 'conditional',
+    description: '결혼 중 배우자 외의 사람과 성관계를 가진 적이 있다(결혼 경험자)',
+    values: { men: 0.2, women: 0.13 },
+    unit: 'proportion',
+    population: 'GSS 최근 조사(결혼 경험 성인)',
+    cohortFit: 'close',
+    source: 'Institute for Family Studies (2018), Who Cheats More? The Demographics of Infidelity in America (GSS 분석)',
+    url: 'https://ifstudies.org/blog/who-cheats-more-the-demographics-of-cheating-in-america',
+    howToMeasure:
+      '결혼 경험자 중 결혼 중 외도 선이 한 번이라도 열린 비율(55세 시점). 학력 차이는 거의 없다(대졸 16%, 고졸 이하 15%, 대학 중퇴 18%). 외도한 사람의 40%가 현재 이혼·별거 상태(충실한 사람 17%) — 방향 검증.',
+  },
+  // ---- 여러 상대와의 출산 ----
+  {
+    id: 'births.multiPartnerFertility',
+    kind: 'conditional',
+    description: '둘 이상의 상대와 아이를 낳은 사람의 비율',
+    values: { mothersTwoPlus: 0.28, menBy40: 0.15, menBy25: 0.05, menBy30: 0.08, menBy35: 0.12, mothers2014: 0.166, fathers2014: 0.146 },
+    unit: 'proportion',
+    population: 'NLSY79 여성(1957–64년생, 출산 완료) 중 자녀 2명 이상인 어머니 · 남성 15–44세(NSFG 2002) · 부모 전체(SIPP 2014)',
+    cohortFit: 'exact',
+    source:
+      'Dorius, C. (2011), University of Michigan / PAA 발표(NLSY79 27년 추적) · Child Trends (2006), Men Who Father Children with More Than One Woman (NSFG 2002) · Monte, L. (2017), Census P70BR-147 (SIPP 2014)',
+    url: 'https://news.umich.edu/?p=8338',
+    howToMeasure:
+      '보정 적률은 mothersTwoPlus: 45세까지 자녀 2명 이상인 주인공 여성 중 아이 아버지가 둘 이상인 비율(28%, 흑인 59%·히스패닉 35%·백인 22%). 남성 수치(40세까지 15%)는 남성의 이전 관계 자녀 과소 보고(Rendall et al. 1999) 때문에 하한 — 진단용. SIPP는 연령 혼합이라 방향 검증용.',
+  },
+  // ---- 관계망 ----
+  {
+    id: 'network.size',
+    kind: 'marginal',
+    description: '아는 사람 수(개인 관계망 크기)',
+    values: { mean: 611, median: 472, lognormalMu: 6.2, lognormalSigma: 0.68 },
+    unit: 'proportion',
+    population: 'GSS 2006 응답자(네트워크 스케일업)',
+    cohortFit: 'distant',
+    source: 'McCormick, Salganik & Zheng (2010), How Many People Do You Know?: Efficiently Estimating Personal Network Size, JASA',
+    url: 'https://www.princeton.edu/~mjs3/mccormick_salganik_zheng10.pdf',
+    howToMeasure: '실체화하지 않는 사람까지 포함한 "아는 사람" 수 — 통계적 인구에서 필요할 때 뽑는 풀의 크기로 쓴다(로그정규).',
+  },
+  {
+    id: 'network.dunbarLayers',
+    kind: 'marginal',
+    description: '친밀도 층의 크기 — 지지 집단 ~5(매주), 공감 집단 ~15(매달), 활동 관계망 ~150(매년)',
+    values: { support: 5, sympathy: 15, band: 50, active: 150 },
+    unit: 'proportion',
+    population: '여러 사회의 관계망 연구(Dunbar)',
+    cohortFit: 'distant',
+    source: 'Dunbar (1998), The social brain hypothesis — Good Medicine 요약',
+    url: 'https://goodmedicine.org.uk/goodknowledge/social-networks-an-introduction/social-networks-dunbars-5-15-50-150-model-sympathy-group-full-active-network/',
+    howToMeasure: '실체화 범위의 근거: 주인공의 공감 집단(15) + 그들의 지지 집단(5씩)까지를 실체화한다. 층 크기는 목표가 아니라 구조.',
+    unverified: '요약본 경유 — 층 크기의 정확한 분포는 원문 미확인.',
+  },
+  {
+    id: 'couples.howMet.1995',
+    kind: 'conditional',
+    description: '이성 부부·커플이 만난 경로(1995, 중복 가능)',
+    values: { friends: 0.33, coworkers: 0.19, barRestaurant: 0.19, family: 0.15, school: 0.1, college: 0.09, neighbors: 0.08, church: 0.07 },
+    unit: 'proportion',
+    population: 'HCMST 2009/2017, 1995년에 만난 이성 커플',
+    cohortFit: 'close',
+    source: 'Rosenfeld, Thomas & Hausen (2019), Disintermediating your friends, PNAS, Table 1',
+    url: 'https://web.stanford.edu/~mrosenfe/Rosenfeld_et_al_Disintermediating_Friends.pdf',
+    howToMeasure: '범주가 겹친다(합 > 1). 모델은 주 경로 하나만 붙이므로 친구 소개·직장·그 밖(바·가족·학교·이웃·교회)의 상대 비율로 비교.',
+  },
+];

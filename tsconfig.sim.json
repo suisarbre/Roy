@@ -29,6 +29,9 @@
     "src/sim/marriage/cli.ts",
     "src/sim/marriage/calibrate.ts",
     "src/sim/career/cli.ts",
-    "src/sim/career/calibrate.ts"
+    "src/sim/career/calibrate.ts",
+    "src/sim/world/calibrate.ts",
+    "src/sim/world/evalWorker.ts",
+    "src/sim/world/cli.ts"
   ]
 }

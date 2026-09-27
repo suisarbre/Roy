@@ -17,6 +17,7 @@ LLM이나 브라우저 없이 Node에서 바로 쓸 수 있다.
 | `eraFacts.ts` | NBER 경기 침체 기준일, 징병 등록(Selective Service) 사실 | 1969–2020 / 1973–1987 | NBER, Proclamation 4771 |
 | `validationTargets.ts` | 하네스 검증 타깃(사망, 결혼·이혼, 일자리, 출산, 자가 보유) | NLSY79(1957–64년생) 중심 | BLS NLSY79, SSA |
 | `work.ts` | 경력·재산 모델(`src/sim/career`)과 여성 노동(`WOMEN_WORK_MOMENTS`: NLSY79 여성 고용·임금 성장, CPS 1999 여성 임금·직업 분포, 어머니 참가율)의 보정 적률: 학력 분포, 학력별 소득, 학력×나이 임금 성장, 고용 상태, 일자리 지속, 이직, 실직 손실, 불황 졸업, 성격과 임금, 세대 간 이동, 사업 생존, 자영업, 순자산; 직업별 남성 임금·인원(CPS 1999), LA 항공우주 붕괴 | 1957–64년생 중심, 1999 횡단면 | BLS NLSY79·CPS·BED, Census P20-528, SCF 2022, RAND RB7510, 논문 초록 |
+| `social.ts` | 공유 세계(`src/sim/world`)의 보정 적률: 55세 결혼 이력(결혼·이혼 경험, 결혼 횟수, 학력별), 재혼, 결혼 전 동거, 혼외 출생 비율(연도별·산모 학력별·동거 커플 비율), 여러 상대와의 출산, 결혼 중 외도, 관계망 크기·던바 층, 부부가 만난 경로 | 1957–64년생 중심 | BLS NLSY79 (MLR 2024), NCHS NVSR 48-16·Series 21 No. 53, NCFMR, Child Trends 2006, Census P70BR-147, IFS 2018 (GSS), McCormick et al. 2010, Rosenfeld et al. 2019 |
 
 각 파일 머리 주석에 URL, 대조한 값, 외삽 가정이 있다.
 

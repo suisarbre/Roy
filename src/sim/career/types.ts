@@ -49,11 +49,43 @@ export interface Worker {
   schoolExitAge: number;
   /** 로스앤젤레스 거주 — 1987~95 항공우주 붕괴가 두 배로 세다. */
   losAngeles: boolean;
+  /** 인종 — 행동 방정식에는 들어가지 않는다. 노동시장에서는 측정된 채용 차별(감사 연구)과 잔차 임금 격차로만. */
+  race?: Race;
+  /** 자란 동네(센서스 트랙트)의 빈곤율 0~1 — 학교(능력·학력)와 어릴 때 인맥(제안)에 들어갈 수 있다. */
+  childhoodPoverty?: number;
+  /** 부모 자산 순위(0~1) — 상속·생전 증여·계약금 도움. */
+  parentWealthRank?: number;
+  /** 외국 출생(이민 1세대) — 학력은 출신국 학교에서, 언어 임금 할인. */
+  immigrant?: boolean;
+}
+
+export type Race = 'white' | 'black' | 'hispanic' | 'other';
+export const RACES: readonly Race[] = ['white', 'black', 'hispanic', 'other'];
+
+/**
+ * 다른 도메인 모듈(건강·범죄·친족·주거)이 이 달의 경력에 주는 영향 — 세계 엔진이 모아서 넘긴다.
+ * 배수는 모집단 평균이 1이 되도록 모듈 쪽에서 만든다(평균 보존 결합).
+ */
+export interface CareerModifiers {
+  /** 수감 중: 일자리를 잃고 노동시장 밖(시설). 풀리면 실업에서 다시 시작. */
+  blocked?: boolean;
+  /** 일자리 제안 배수(전과 → 채용 벌점, 관계망 → 소개 등). */
+  offerMultiplier?: number;
+  /** 로그 임금 가산(전과 벌점 등). */
+  wageShift?: number;
+  /** 장애 해저드 배수(건강 자본). */
+  disabilityMultiplier?: number;
+  /** 건강 모듈이 이 달 근로 제한 장애가 생겼다고 정함(해저드와 별개로 강제). */
+  disabilityOnset?: boolean;
+  /** 해고 해저드 배수. */
+  layoffMultiplier?: number;
+  /** 이 달 들어온(나간) 목돈 — AWI 배수. 상속(+), 주택 계약금(−) 등. 연말 재산에 합산. */
+  wealthTransfer?: number;
 }
 
 export type LaborState = 'student' | 'employed' | 'selfEmployed' | 'unemployed' | 'outOfLaborForce' | 'retired';
 
-export type SeparationReason = 'family' | 'quit' | 'jobToJob' | 'layoff' | 'plantClosing' | 'disability' | 'retirement' | 'termEnd' | 'schoolExit' | 'businessStart';
+export type SeparationReason = 'incarceration' | 'family' | 'quit' | 'jobToJob' | 'layoff' | 'plantClosing' | 'disability' | 'retirement' | 'termEnd' | 'schoolExit' | 'businessStart';
 
 export interface JobSpell {
   employerId: number;
@@ -130,7 +162,9 @@ export type CareerEventKind =
   | 'businessClosed'
   | 'retired'
   | 'leftForFamily'
-  | 'returnedToWork';
+  | 'returnedToWork'
+  | 'incarcerated'
+  | 'released';
 
 export interface MonthTrace {
   ageMonths: number;
@@ -152,6 +186,8 @@ export interface HouseholdContext {
   birthThisMonth: boolean;
   /** 배우자의 최근 연소득(AWI 배수). */
   spouseAnnualEarnings: number;
+  /** 다른 모듈의 영향(세계 엔진). */
+  modifiers?: CareerModifiers;
 }
 
 /**

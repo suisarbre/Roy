@@ -8,6 +8,16 @@ import type { Couple, EmploymentState, JobShockKind } from '../marriage/types';
 import { DEFAULT_CAREER_PARAMS, sampleProfile, toSpouse, toWorker, type PersonProfile } from '../person/profile';
 import { createRng, type Rng } from '../rng';
 import { gaussian, mixSeed, sigmoid } from '../stats';
+import {
+  mergeCareerModifiers,
+  mergeUnionEffects,
+  type DomainEvent,
+  type DomainName,
+  type ModuleContext,
+  type UnionEffects,
+  type WorldModule,
+  type WorldMonthInputs,
+} from './modules';
 import { WORLD_STRUCTURE as W, type WorldParams } from './params';
 
 /**
@@ -69,6 +79,17 @@ export interface WorldPerson {
   /** 월별 경력 기록(World.recordMonths일 때 주인공만) — NPC 인생 이야기가 읽는다. */
   months?: CareerStepResult[];
   seed: number;
+  // ---- 도메인 모듈(modules.ts) ----
+  /** 모듈별 상태. */
+  domains: Partial<Record<DomainName, unknown>>;
+  /** 모듈이 낸 사건(시간 순). */
+  events: DomainEvent[];
+  /** 사망 원인(건강 모듈이 사망을 맡을 때). */
+  deathCause?: string;
+  /** 마지막으로 모듈에 넘긴 월 입력. */
+  lastInputs?: WorldMonthInputs;
+  /** 이 달 끝난 주 관계의 이유(모듈 입력용). */
+  unionEndedAt?: { month: number; reason: UnionEndReason };
 }
 
 export interface WorldUnion {
@@ -99,6 +120,8 @@ export interface WorldConfig {
   women: WomenLaborParams;
   career?: CareerParams;
 }
+
+const DOMAIN_SALT: Record<DomainName, number> = { health: 0x1000, crime: 0x2000, kin: 0x3000, place: 0x4000 };
 
 const EDUCATION_RANK = { lessThanHighSchool: 0, highSchool: 1, someCollege: 2, bachelorsOrMore: 3 } as const;
 
@@ -131,10 +154,15 @@ export class World {
   private readonly config: WorldConfig;
   /** 주인공의 월별 경력을 기록할지(게임 NPC용 — 보정 때는 끈다). */
   recordMonths = false;
+  /** 붙은 도메인 모듈(순서 = 매달 step 순서). */
+  readonly modules: readonly WorldModule[];
+  private readonly deathModule?: WorldModule;
 
-  constructor(config: WorldConfig, startMonth: number) {
+  constructor(config: WorldConfig, startMonth: number, options: { modules?: readonly WorldModule[] } = {}) {
     this.config = config;
     this.month = startMonth;
+    this.modules = options.modules ?? [];
+    this.deathModule = this.modules.find((m) => m.deathProbability);
     this.careerParams = config.career ?? DEFAULT_CAREER_PARAMS;
     const m = config.marriage;
     const w = config.world;
@@ -160,6 +188,8 @@ export class World {
       children: [],
       cheatedWhileMarried: false,
       priorKids: 0,
+      domains: {},
+      events: [],
       appeal: gaussian(createRng(mixSeed(profile.lifeSeed, 0xa99e))) + appealShift,
       seed: mixSeed(profile.lifeSeed, 0x9e1d),
     };
@@ -287,6 +317,9 @@ export class World {
     u.endedAt = this.month;
     u.endReason = reason;
     this.openUnionIds.delete(u.id);
+    if (!u.secret) {
+      for (const id of [u.manId, u.womanId]) this.persons.get(id)!.unionEndedAt = { month: this.month, reason };
+    }
     // 주 관계가 끝나면 진행 중이던 외도는 공개 연애가 된다.
     for (const id of this.openUnionIds) {
       const other = this.unions.get(id)!;
@@ -338,12 +371,25 @@ export class World {
       for (const u of this.openUnions(p)) active.add(this.partnerOf(u, p));
     }
 
-    // 1. 사망.
+    // 0. 모듈 상태가 없는 활성 인물은 여기서 초기화(처음 활성이 된 달).
+    if (this.modules.length > 0) for (const p of active) this.ensureModules(p, t);
+
+    // 1. 사망 — 사망을 맡은 모듈(건강)이 있으면 그 확률과 원인, 없으면 코호트 생명표.
     for (const p of active) {
       const rng = createRng(mixSeed(p.seed, t * 3 + 1));
-      if (rng() < monthlyDeathProbability(p.profile.birthYear, p.profile.sex, this.ageMonths(p) / 12)) {
+      const age = this.ageMonths(p) / 12;
+      const state = this.deathModule ? p.domains[this.deathModule.name] : undefined;
+      const hazard =
+        this.deathModule && state !== undefined ? this.deathModule.deathProbability!(state, p, p.lastInputs ?? this.buildInputs(p, t)) : undefined;
+      const probability = hazard?.probability ?? monthlyDeathProbability(p.profile.birthYear, p.profile.sex, age);
+      if (rng() < probability) {
         p.alive = false;
         p.diedAt = t;
+        if (hazard?.causes && hazard.causes.length > 0) {
+          const total = hazard.causes.reduce((a, [, x]) => a + x, 0);
+          let roll = rng() * total;
+          p.deathCause = hazard.causes.find(([, x]) => (roll -= x) <= 0)?.[0] ?? hazard.causes[hazard.causes.length - 1][0];
+        }
         for (const u of this.openUnions(p)) this.endUnion(u, 'widowed');
       }
     }
@@ -352,7 +398,7 @@ export class World {
     for (const p of active) {
       if (!p.alive || p.profile.sex !== 'male') continue;
       if (!p.focal && !this.coresident(p)) continue;
-      this.stepCareer(p, { married: this.coresident(p), birthThisMonth: false, spouseAnnualEarnings: 0 });
+      this.stepCareer(p, { married: this.coresident(p), birthThisMonth: false, spouseAnnualEarnings: 0, modifiers: this.careerModifiers(p) });
     }
 
     // 3. 선(그 전에 예정된 출산).
@@ -375,7 +421,24 @@ export class World {
         birthThisMonth: this.birthsThisMonth.has(p.id),
         youngestChildAgeMonths: this.youngestChildAge(p, t),
         spouseAnnualEarnings: partner?.earnings12 ?? 0,
+        modifiers: this.careerModifiers(p),
       });
+    }
+
+    // 4½. 도메인 모듈(이 달의 경력·관계가 정해진 뒤). 입력의 다른 도메인 요약은 지난달 끝 상태.
+    if (this.modules.length > 0) {
+      for (const p of active) {
+        if (!p.alive) continue;
+        const inputs = this.buildInputs(p, t);
+        p.lastInputs = inputs;
+        for (const m of this.modules) {
+          if (m.scope === 'focal' && !p.focal) continue;
+          const state = p.domains[m.name];
+          if (state === undefined) continue;
+          const events = m.step(this.moduleContext(p, m, t), p, state, inputs);
+          if (events) for (const e of events) p.events.push(e);
+        }
+      }
     }
 
     // 5. 만남(주인공만 스스로 찾는다 — 상대들은 주인공과의 관계 안에서만 산다)과 외도(같이 사는 누구나).
@@ -383,10 +446,12 @@ export class World {
       if (!p.alive) continue;
       const rng = createRng(mixSeed(p.seed, t * 3 + 2));
       const main = this.mainUnion(p);
+      const meet = this.meetMultiplier(p);
+      if (meet <= 0) continue;
       if (!main) {
-        if (p.focal) this.maybeMeet(p, rng, w);
+        if (p.focal) this.maybeMeet(p, rng, w, meet);
       } else if (main.stage !== 'dating' && main.endedAt === undefined) {
-        this.maybeAffair(p, main, rng, w);
+        this.maybeAffair(p, main, rng, w, meet);
       }
     }
 
@@ -418,6 +483,17 @@ export class World {
     const cheaterIsMan = this.cheaterIn(u, man);
     const cheaterIsWoman = this.cheaterIn(u, woman);
     const educationRank = EDUCATION_RANK[woman.profile.education];
+    // 모듈의 관계 영향(수감 → 떨어져 삶, 약물 → 떠남 쪽 등).
+    const manFx = this.unionEffects(man);
+    const womanFx = this.unionEffects(woman);
+    const apart = manFx?.institutionalized === true || womanFx?.institutionalized === true;
+    const shock = (manFx?.satisfactionShock ?? 0) + (womanFx?.satisfactionShock ?? 0);
+    if (shock !== 0) u.state.satisfaction += shock;
+    const affairAlt = cheaterIsMan || cheaterIsWoman ? { husband: cheaterIsMan ? W.affairAlternative : 0, wife: cheaterIsWoman ? W.affairAlternative : 0 } : undefined;
+    const extraAlternatives =
+      affairAlt || manFx?.leaveShift || womanFx?.leaveShift
+        ? { husband: (affairAlt?.husband ?? 0) + (manFx?.leaveShift ?? 0), wife: (affairAlt?.wife ?? 0) + (womanFx?.leaveShift ?? 0) }
+        : undefined;
 
     const { record } = stepUnionMonth(
       u.state,
@@ -429,9 +505,9 @@ export class World {
         employment: coresident ? EMPLOYMENT_OF(man.careerLast) : 'employed',
         shock: coresident ? SHOCK_OF(man.careerLast) : undefined,
         wifeLast: coresident ? woman.careerLast : undefined,
-        noPlannedBirths: nonMarital,
-        unplannedRatio: nonMarital ? (woman.pregnancy ? 0 : w.unplannedConception * Math.exp(-w.unplannedEducation * educationRank)) : undefined,
-        extraAlternatives: cheaterIsMan || cheaterIsWoman ? { husband: cheaterIsMan ? W.affairAlternative : 0, wife: cheaterIsWoman ? W.affairAlternative : 0 } : undefined,
+        noPlannedBirths: nonMarital || apart,
+        unplannedRatio: apart ? 0 : nonMarital ? (woman.pregnancy ? 0 : w.unplannedConception * Math.exp(-w.unplannedEducation * educationRank)) : undefined,
+        extraAlternatives,
       },
       rng,
     );
@@ -478,9 +554,9 @@ export class World {
       return;
     }
 
-    // 단계 전이.
+    // 단계 전이(떨어져 사는 동안은 없다 — 교도소 결혼은 드물어 무시).
     const months = t - (u.stage === 'dating' ? u.startedAt : (u.cohabitedAt ?? u.startedAt));
-    if (months < 3 || this.ageMonths(man) < 17 * 12 || this.ageMonths(woman) < 17 * 12) return;
+    if (apart || months < 3 || this.ageMonths(man) < 17 * 12 || this.ageMonths(woman) < 17 * 12) return;
     const sat = u.state.satisfaction;
     const trad = this.avgTraditionalism(u);
     const year = t / 12;
@@ -549,14 +625,15 @@ export class World {
     this.ensureCareer(this.persons.get(u.womanId)!);
   }
 
-  private maybeMeet(p: WorldPerson, rng: Rng, w: WorldParams): void {
+  private maybeMeet(p: WorldPerson, rng: Rng, w: WorldParams, multiplier = 1): void {
     const age = this.ageMonths(p) / 12;
     if (age < W.minDatingAge) return;
     const previouslyPartnered = p.unionIds.some((id) => this.unions.get(id)!.stage !== 'dating');
     const rate =
       w.meetBase *
       Math.exp(-w.meetAgeDecline * Math.max(0, age - 20) + w.meetExtraversion * p.profile.traits.extraversion + w.meetHeterogeneity * p.appeal) *
-      (previouslyPartnered ? w.remarriageMeet : 1);
+      (previouslyPartnered ? w.remarriageMeet : 1) *
+      multiplier;
     if (rng() >= rate) return;
     const student = p.careerLast?.state === 'student' || age < p.profile.schoolExitAge;
     const employed = p.careerLast?.state === 'employed';
@@ -580,10 +657,11 @@ export class World {
     this.createUnion(p, partner, channel, rng);
   }
 
-  private maybeAffair(p: WorldPerson, main: WorldUnion, rng: Rng, w: WorldParams): void {
+  private maybeAffair(p: WorldPerson, main: WorldUnion, rng: Rng, w: WorldParams, multiplier = 1): void {
     if (this.openUnions(p).some((u) => u.secret && u.cheaterId === p.id)) return;
     const t = p.profile.traits;
     const opportunity =
+      multiplier *
       w.affairOpportunity * (p.careerLast?.state === 'employed' ? 1.3 : 0.8) * Math.exp(0.3 * t.extraversion + (p.profile.sex === 'female' ? w.affairWomen : 0));
     if (rng() >= opportunity) return;
     const propensity = sigmoid(
@@ -593,6 +671,81 @@ export class World {
     const partner = this.materializePartner(p, p.careerLast?.state === 'employed' && rng() < 0.5 ? 'work' : 'friends', rng, true);
     this.createUnion(p, partner, 'other', rng, true, p.id, main.id);
     if (main.stage === 'married') p.cheatedWhileMarried = true;
+  }
+
+  // ---- 모듈 ----
+
+  private moduleContext(p: WorldPerson, m: WorldModule, t: number): ModuleContext {
+    const domainSalt = DOMAIN_SALT[m.name];
+    return { month: t, rng: (slot: number) => createRng(mixSeed(mixSeed(p.seed, t), domainSalt + slot)) };
+  }
+
+  private ensureModules(p: WorldPerson, t: number): void {
+    let inputs: WorldMonthInputs | undefined;
+    for (const m of this.modules) {
+      if (m.scope === 'focal' && !p.focal) continue;
+      if (p.domains[m.name] !== undefined) continue;
+      inputs ??= this.buildInputs(p, t);
+      p.domains[m.name] = m.init(this.moduleContext(p, m, t), p, inputs);
+    }
+  }
+
+  private careerModifiers(p: WorldPerson) {
+    if (this.modules.length === 0) return undefined;
+    return mergeCareerModifiers(this.modules.map((m) => (m.careerModifiers && p.domains[m.name] !== undefined ? m.careerModifiers(p.domains[m.name], p) : undefined)));
+  }
+
+  private unionEffects(p: WorldPerson): UnionEffects | undefined {
+    if (this.modules.length === 0) return undefined;
+    return mergeUnionEffects(this.modules.map((m) => (m.unionEffects && p.domains[m.name] !== undefined ? m.unionEffects(p.domains[m.name], p) : undefined)));
+  }
+
+  private meetMultiplier(p: WorldPerson): number {
+    let x = 1;
+    for (const m of this.modules) if (m.meetMultiplier && p.domains[m.name] !== undefined) x *= m.meetMultiplier(p.domains[m.name], p);
+    return x;
+  }
+
+  /** 모듈 상태의 요약(모듈 입력용). */
+  summaryOf<T>(p: WorldPerson, name: DomainName): T | undefined {
+    const m = this.modules.find((x) => x.name === name);
+    const state = p.domains[name];
+    return m && state !== undefined ? (m.summary(state) as T) : undefined;
+  }
+
+  /** 이 사람의 이 달 사실(모듈 입력). 경력·관계는 이 달 것이 이미 정해진 뒤에 부른다. */
+  buildInputs(p: WorldPerson, t: number): WorldMonthInputs {
+    const main = this.mainUnion(p);
+    const r = p.careerLast && p.birthTotal + p.careerLast.ageMonths === t ? p.careerLast : undefined;
+    const youngest = p.children.length > 0 ? t - p.children[p.children.length - 1].bornAt : undefined;
+    return {
+      month: t,
+      year: Math.floor(t / 12),
+      ageMonths: t - p.birthTotal,
+      sex: p.profile.sex,
+      focal: p.focal,
+      career: r,
+      labor: p.careerLast?.state,
+      disabled: p.careerLast?.disabled ?? false,
+      earnings12: p.earnings12,
+      netWorth: p.careerLast?.netWorth ?? 0,
+      union: main ? main.stage : 'single',
+      partnerId: main ? (main.manId === p.id ? main.womanId : main.manId) : undefined,
+      everMarried: p.unionIds.some((id) => this.unions.get(id)!.marriedAt !== undefined),
+      unionEndedThisMonth: p.unionEndedAt?.month === t ? p.unionEndedAt.reason : undefined,
+      children: p.children.length + p.priorKids,
+      youngestChildAgeMonths: youngest,
+      birthThisMonth: youngest === 0,
+      health: this.summaryOf(p, 'health'),
+      crime: this.summaryOf(p, 'crime'),
+      place: this.summaryOf(p, 'place'),
+      kin: this.summaryOf(p, 'kin'),
+    };
+  }
+
+  /** 주인공 목록(읽기 전용). */
+  get focalPersons(): readonly WorldPerson[] {
+    return this.focalList;
   }
 
   runUntil(month: number): void {

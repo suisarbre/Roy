@@ -2,12 +2,9 @@ import type { GameDate } from '../../game/types';
 import { createCareerStepper, type CareerStepResult } from '../career/model';
 import type { HouseholdContext } from '../career/types';
 import { totalMonthsToDate } from '../gameDate';
-import { CALIBRATED_PARAMS, CALIBRATED_WOMEN_PARAMS } from '../marriage/calibratedParams';
-import { INITIAL_PARAMS, INITIAL_WOMEN_PARAMS } from '../marriage/params';
 import { createRng } from '../rng';
-import { CALIBRATED_WORLD_MARRIAGE, CALIBRATED_WORLD_PARAMS } from '../world/calibratedParams';
+import { defaultWorldConfig } from '../world/config';
 import { World } from '../world/engine';
-import { INITIAL_WORLD_PARAMS } from '../world/params';
 import { DEFAULT_CAREER_PARAMS, toWorker, type PersonProfile } from './profile';
 
 /**
@@ -51,11 +48,7 @@ export interface LifeStoryOptions {
 }
 
 const UNTIL_AGE = 85;
-const WORLD_CONFIG = {
-  world: { ...INITIAL_WORLD_PARAMS, ...CALIBRATED_WORLD_PARAMS },
-  marriage: { ...INITIAL_PARAMS, ...CALIBRATED_PARAMS, ...CALIBRATED_WORLD_MARRIAGE },
-  women: { ...INITIAL_WOMEN_PARAMS, ...CALIBRATED_WOMEN_PARAMS },
-};
+const WORLD_CONFIG = defaultWorldConfig();
 const cache = new Map<string, LifeStory>();
 const CACHE_LIMIT = 1000;
 

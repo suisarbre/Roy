@@ -31,12 +31,10 @@
     "src/game/memoryExtractionCheck.ts",
     "src/game/threadEngineCheck.ts",
     "src/game/npcCheckInCheck.ts",
-    "src/sim/marriage/cli.ts",
-    "src/sim/marriage/calibrate.ts",
-    "src/sim/career/cli.ts",
-    "src/sim/career/calibrate.ts",
-    "src/sim/world/calibrate.ts",
-    "src/sim/world/evalWorker.ts",
-    "src/sim/world/cli.ts"
+    "src/sim/*/cli.ts",
+    "src/sim/*/calibrate.ts",
+    "src/sim/*/evalWorker.ts",
+    "src/sim/*/evalEntry.ts",
+    "src/sim/calib/pool.ts"
   ]
 }

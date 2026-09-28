@@ -153,6 +153,9 @@ export const CAREER_EVENT_SALIENCE: Readonly<Record<CareerEventKind, { salience:
   retired: { salience: 0.6, domain: 'work' },
   leftForFamily: { salience: 0.6, domain: 'familyDuty' },
   returnedToWork: { salience: 0.5, domain: 'work' },
+  // 수감으로 일을 잃고 풀려난 것 — 사건 자체는 crime 모듈이 더 현저하게 내보낸다. 경력 쪽은 조용히.
+  incarcerated: { salience: 0.3, domain: 'livelihood' },
+  released: { salience: 0.3, domain: 'livelihood' },
 };
 
 export const OCCUPATION_LABEL_EN: Readonly<Record<OccupationId, string>> = {
@@ -210,6 +213,10 @@ export function describeCareerEvent(name: string, event: CareerEvent): string {
       return `${name} had to stop working because of a disability.`;
     case 'leftLaborForce':
       return `${name} gave up looking for work.`;
+    case 'incarcerated':
+      return `${name} lost their job when they went to jail.`;
+    case 'released':
+      return `${name} got out and started looking for work again.`;
     case 'businessStarted':
       return `${name} started their own business.`;
     case 'businessClosed':

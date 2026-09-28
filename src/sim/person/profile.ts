@@ -2,7 +2,8 @@ import { CALIBRATED_CAREER_PARAMS } from '../career/calibratedParams';
 import type { Schooling } from '../career/occupations';
 import { CAREER_STRUCTURE, INITIAL_CAREER_PARAMS, type CareerParams } from '../career/params';
 import { buildWorker, drawWorker, inverseNormal } from '../career/population';
-import type { Education, Worker } from '../career/types';
+import type { Education, Race, Worker } from '../career/types';
+import { childhoodTractPoverty } from '../demography';
 import type { Sex } from '../data';
 import { gaussian } from '../stats';
 import type { Spouse } from '../marriage/types';
@@ -46,6 +47,14 @@ export interface PersonProfile {
   degree?: 'law' | 'medicine' | 'doctorate';
   schoolExitAge: number;
   losAngeles: boolean;
+  // ---- 출생 배경(src/sim/demography.ts). 인종은 행동 방정식에 계수로 들어가지 않는다 — 구조 경로로만. ----
+  race: Race;
+  /** 이민 1세대(16세부터 미국에 있다고 단순화). */
+  immigrant: boolean;
+  /** 부모 자산 순위(0~1). */
+  parentWealthRank: number;
+  /** 자란 동네(센서스 트랙트)의 빈곤율(0~1). 어른이 된 뒤의 동네는 place 모듈이 바꾼다. */
+  childhoodPoverty: number;
   /** 이 사람의 모든 운(경력 궤적 등)을 재현하는 시드. */
   lifeSeed: number;
 }
@@ -64,6 +73,8 @@ export interface SampleProfileOptions {
   parentRank?: number;
   /** 시나리오용: 학력을 고정(졸업 나이도 그 학력의 보통 나이로). */
   forceEducation?: Education;
+  /** 인종 고정(Roy는 백인). 안 주면 출생 코호트 × 지역 구성비로 뽑는다. */
+  race?: Race;
 }
 
 /**
@@ -75,9 +86,12 @@ export interface SampleProfileOptions {
 export function sampleProfile(seed: number, options: SampleProfileOptions, careerParams: CareerParams = DEFAULT_CAREER_PARAMS): PersonProfile {
   const rng = createRng(seed);
   // losAngeles를 안 주면 전국 표본(LA 3.5%)으로 뽑는다. 게임 NPC는 Roy의 동네라 true를 준다.
-  const draw = drawWorker(rng, [options.birthYear, options.birthYear], options.losAngeles);
+  const draw = drawWorker(rng, [options.birthYear, options.birthYear], options.losAngeles, options.race);
   draw.birthMonth = 0;
-  if (options.parentRank !== undefined) draw.parentRank = options.parentRank;
+  if (options.parentRank !== undefined) {
+    draw.parentRank = options.parentRank;
+    draw.childhoodPoverty = childhoodTractPoverty(options.parentRank, draw.neighborhoodNoise, draw.race);
+  }
   const financialAnxiety = gaussian(rng);
   const traditionalism = gaussian(rng);
   const parentsDivorced = rng() < PARENTS_DIVORCED_SHARE;
@@ -120,6 +134,10 @@ export function sampleProfile(seed: number, options: SampleProfileOptions, caree
     degree: worker.degree,
     schoolExitAge: worker.schoolExitAge,
     losAngeles: worker.losAngeles,
+    race: draw.race,
+    immigrant: draw.immigrant,
+    parentWealthRank: draw.parentWealthRank,
+    childhoodPoverty: draw.childhoodPoverty,
     lifeSeed,
   };
 }
@@ -145,6 +163,10 @@ export function toWorker(profile: PersonProfile): Worker {
     degree: profile.degree,
     schoolExitAge: profile.schoolExitAge,
     losAngeles: profile.losAngeles,
+    race: profile.race,
+    immigrant: profile.immigrant,
+    childhoodPoverty: profile.childhoodPoverty,
+    parentWealthRank: profile.parentWealthRank,
   };
 }
 

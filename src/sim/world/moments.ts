@@ -5,6 +5,7 @@ import type { Education } from '../marriage/types';
 import { sampleProfile, type PersonProfile } from '../person/profile';
 import { createRng } from '../rng';
 import { World, type WorldPerson, type WorldUnion } from './engine';
+import type { WorldModule } from './modules';
 import type { WorldParams } from './params';
 
 /**
@@ -114,15 +115,23 @@ export interface WorldMeasure {
   focal: WorldPerson[];
 }
 
+export interface FocalWorldOptions {
+  /** 붙일 도메인 모듈(건강·범죄·친족·주거). */
+  modules?: readonly WorldModule[];
+  /** 언제까지 굴릴지(총 개월). 기본: 1965년생이 58세가 되는 2023년 초. 건강(기대수명)은 더 길게. */
+  until?: number;
+}
+
 export function runFocalWorld(
   params: { world: WorldParams; marriage: MarriageParams; women: WomenLaborParams },
   n: number,
   seed: number,
+  options: FocalWorldOptions = {},
 ): { world: World; focal: WorldPerson[] } {
-  const world = new World(params, 1957 * 12 + 16 * 12);
+  const world = new World(params, 1957 * 12 + 16 * 12, { modules: options.modules });
   const focal: WorldPerson[] = [];
   for (let i = 0; i < n; i++) focal.push(world.addPerson(focalProfile(seed, i), true));
-  world.runUntil(1965 * 12 + 58 * 12);
+  world.runUntil(options.until ?? 1965 * 12 + 58 * 12);
   return { world, focal };
 }
 

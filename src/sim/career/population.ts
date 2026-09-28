@@ -1,8 +1,9 @@
+import { childhoodTractPoverty, drawRace, IMMIGRANT_SHARE, parentIncomeRank, parentWealthRank } from '../demography';
 import { createRng, type Rng } from '../rng';
 import { gaussian } from '../stats';
 import type { Schooling } from './occupations';
 import { CAREER_STRUCTURE as S, type CareerParams } from './params';
-import { EDUCATIONS, type Education, type Worker, type WorkerTraits } from './types';
+import { EDUCATIONS, type Education, type Race, type Worker, type WorkerTraits } from './types';
 
 /** 표준정규 누적분포의 역함수(Acklam 근사, 상대오차 < 1.2e-9). */
 export function inverseNormal(p: number): number {
@@ -36,11 +37,35 @@ export interface WorkerDraw {
   graduateTypeRoll: number;
   exitAgeNoise: number;
   losAngeles: boolean;
+  // ---- 출생 배경(src/sim/demography.ts) — 기존 추출 뒤에 뽑아 공통 난수를 지킨다 ----
+  race: Race;
+  immigrant: boolean;
+  /** 부모 소득 잠재변수(인종 조건부 정규) — parentRank = 전국 혼합 CDF(이 값). */
+  parentIncomeLatent: number;
+  parentWealthRank: number;
+  /** 자란 동네(센서스 트랙트)의 빈곤율 0~1. */
+  childhoodPoverty: number;
+  /** 원재료 — 인종을 바꿔 다시 유도할 때(시나리오). */
+  parentRankRoll: number;
+  immigrantRoll: number;
+  wealthNoise: number;
+  neighborhoodNoise: number;
 }
 
-export function drawWorker(rng: Rng, birthYears: readonly [number, number] = [1957, 1964], losAngeles?: boolean): WorkerDraw {
+/** 인종이 정해진 뒤의 출생 배경을 유도한다(parentRank는 인종 조건부로 바뀐다). */
+export function applyBackground(draw: WorkerDraw, race: Race): void {
+  draw.race = race;
+  const { rank, latent } = parentIncomeRank(draw.parentRankRoll, race);
+  draw.parentRank = rank;
+  draw.parentIncomeLatent = latent;
+  draw.parentWealthRank = parentWealthRank(latent, draw.wealthNoise, race);
+  draw.childhoodPoverty = childhoodTractPoverty(rank, draw.neighborhoodNoise, race);
+  draw.immigrant = draw.immigrantRoll < IMMIGRANT_SHARE[race];
+}
+
+export function drawWorker(rng: Rng, birthYears: readonly [number, number] = [1957, 1964], losAngeles?: boolean, race?: Race): WorkerDraw {
   const [minYear, maxYear] = birthYears;
-  return {
+  const draw: Omit<WorkerDraw, 'race' | 'immigrant' | 'parentIncomeLatent' | 'parentWealthRank' | 'childhoodPoverty' | 'parentRankRoll' | 'immigrantRoll' | 'wealthNoise' | 'neighborhoodNoise'> = {
     birthYear: minYear + Math.floor(rng() * (maxYear - minYear + 1)),
     birthMonth: Math.floor(rng() * 12),
     parentRank: rng(),
@@ -59,6 +84,21 @@ export function drawWorker(rng: Rng, birthYears: readonly [number, number] = [19
     exitAgeNoise: gaussian(rng),
     losAngeles: losAngeles ?? rng() < S.losAngelesShare,
   };
+  const raceRoll = rng();
+  const full: WorkerDraw = {
+    ...draw,
+    race: race ?? drawRace(raceRoll, draw.birthYear, draw.losAngeles),
+    immigrant: false,
+    parentIncomeLatent: 0,
+    parentWealthRank: 0.5,
+    childhoodPoverty: 0.1,
+    parentRankRoll: draw.parentRank,
+    immigrantRoll: rng(),
+    wealthNoise: gaussian(rng),
+    neighborhoodNoise: gaussian(rng),
+  };
+  applyBackground(full, full.race);
+  return full;
 }
 
 function abilityOf(draw: WorkerDraw): number {
@@ -160,5 +200,9 @@ export function buildWorker(draw: WorkerDraw, p: CareerParams): Worker {
     degree,
     schoolExitAge,
     losAngeles: draw.losAngeles,
+    race: draw.race,
+    immigrant: draw.immigrant,
+    childhoodPoverty: draw.childhoodPoverty,
+    parentWealthRank: draw.parentWealthRank,
   };
 }
